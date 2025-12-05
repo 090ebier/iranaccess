@@ -4,7 +4,7 @@
 DEST="/var/www/html"
 
 # Allowed extensions
-VALID_EXTENSIONS=("tar.gz" "zip" "tar.zst" "tar" "sql")
+VALID_EXTENSIONS=("tar.gz" "zip" "tar.zst" "tar" "sql" "rar")
 
 usage() {
   echo "Usage: $0 [-c | -m]"
