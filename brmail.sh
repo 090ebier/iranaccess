@@ -37,35 +37,41 @@ safe_username() {
 }
 
 # -------------------------------
-# Safe move Maildir (no overwrite)
-# - If destination exists and is NOT empty -> abort that mailbox
-# - Prefer mv (fast on same FS)
-# - Fallback: cp -a then rm -rf source (still a "move")
+# Global tmp cleanup (always cleans, unless SIGKILL)
 # -------------------------------
-move_maildir_safe() {
+TMP_DIRS=()
+cleanup_tmp() {
+  for d in "${TMP_DIRS[@]}"; do
+    [[ -n "$d" && -d "$d" ]] && rm -rf "$d"
+  done
+}
+trap cleanup_tmp EXIT INT TERM
+
+# -------------------------------
+# Safe replace Maildir:
+# - If destination exists, move it aside as .bak-TIMESTAMP
+# - Then move source into place (fast mv if possible)
+# - Fallback: copy then delete source
+# -------------------------------
+replace_maildir_safe() {
   local src_dir="$1"      # source Maildir directory
   local dest_dir="$2"     # destination Maildir directory
 
   [[ -d "$src_dir" ]] || die "Source Maildir not found: $src_dir"
-
-  # If destination exists and has any content, skip to avoid mixing/overwrite
-  if [[ -d "$dest_dir" ]] && find "$dest_dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .; then
-    echo -e "${red}Destination exists and is not empty, skipping to avoid overwrite: $dest_dir${clear}"
-    return 1
-  fi
-
-  # Ensure parent exists
   mkdir -p "$(dirname "$dest_dir")" || die "mkdir failed: $(dirname "$dest_dir")"
 
-  # If destination exists but empty, remove it so mv can place cleanly
-  [[ -d "$dest_dir" ]] && rmdir "$dest_dir" 2>/dev/null || true
+  if [[ -d "$dest_dir" ]]; then
+    local ts bak
+    ts="$(date +%F_%H%M%S)"
+    bak="${dest_dir}.bak-${ts}"
+    mv "$dest_dir" "$bak" || die "Failed to backup existing Maildir: $dest_dir -> $bak"
+    echo -e "${cyan}Existing Maildir backed up to: $bak${clear}"
+  fi
 
-  # Try fast move first
   if mv "$src_dir" "$dest_dir" 2>/dev/null; then
     return 0
   fi
 
-  # Fallback (cross-filesystem): copy then delete source
   mkdir -p "$dest_dir" || die "mkdir failed: $dest_dir"
   cp -a "$src_dir/"* "$dest_dir/" 2>/dev/null || true
   rm -rf "$src_dir" 2>/dev/null || true
@@ -113,6 +119,7 @@ backup_mail() {
 
 # --------- PATH DETECTION FOR RESTORE ----------
 detect_mail_or_imap_base() {
+  # outputs two vars via echo: "MAIL_SRC=... IMAP_SRC=..."
   local cur mail_src="" imap_src=""
   cur="$(pwd -P)"
 
@@ -120,6 +127,7 @@ detect_mail_or_imap_base() {
     [[ -d "$cur/homedir/mail" ]] && mail_src="$cur/homedir/mail"
     [[ -d "$cur/mail" ]] && mail_src="$cur/mail"
     [[ "$(basename "$cur")" == "mail" ]] && mail_src="$cur"
+
     [[ -d "$cur/imap" ]] && imap_src="$cur/imap"
     [[ "$(basename "$cur")" == "imap" ]] && imap_src="$cur"
 
@@ -162,14 +170,13 @@ restore_cpanel_to_directadmin() {
     /usr/local/directadmin/scripts/add_email.sh "$EMAIL_USER" "$domain" "$password" 1 0
     echo -e "${cyan}Email account $EMAIL_USER created.${clear}"
 
-    # SAFE MOVE: move the whole Maildir folder (EMAIL_USER is a Maildir in cPanel backup)
-    if move_maildir_safe "$EMAIL_USER" "$DEST_EMAIL_PATH"; then
-      chown -R "$username:mail" "$DESTINATION_PATH/$EMAIL_USER" 2>/dev/null || true
-      echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
-    else
-      echo -e "${red}$EMAIL_USER skipped due to non-empty destination.\n${clear}"
-    fi
+    # Replace Maildir safely (backup existing dest if any)
+    replace_maildir_safe "$EMAIL_USER" "$DEST_EMAIL_PATH"
 
+    # Fix ownership
+    chown -R "$username:mail" "$DESTINATION_PATH/$EMAIL_USER" 2>/dev/null || true
+
+    echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
     sleep 1
   done
   shopt -u dotglob
@@ -209,16 +216,16 @@ restore_directadmin_to_cpanel() {
         }
     }'
 
-    # SAFE MOVE: in DA backup structure, Maildir is inside EMAIL_USER/Maildir
-    if move_maildir_safe "$EMAIL_USER/Maildir" "$DEST_EMAIL_PATH"; then
-      chown -R "$username." "$DEST_EMAIL_PATH" 2>/dev/null || true
-      echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
-      # if EMAIL_USER directory became empty after moving Maildir, remove it
-      rmdir "$EMAIL_USER" 2>/dev/null || true
-    else
-      echo -e "${red}$EMAIL_USER skipped due to non-empty destination.\n${clear}"
-    fi
+    # Replace Maildir safely (backup existing dest if any)
+    replace_maildir_safe "$EMAIL_USER/Maildir" "$DEST_EMAIL_PATH"
 
+    # Remove empty wrapper dir if possible
+    rmdir "$EMAIL_USER" 2>/dev/null || true
+
+    # Fix ownership
+    chown -R "$username." "$DEST_EMAIL_PATH" 2>/dev/null || true
+
+    echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
     sleep 1
   done
   shopt -u dotglob
@@ -249,7 +256,7 @@ restore_mail() {
   [[ -f "$archive" ]] || die "Archive not found: $archive"
 
   workdir="$(mktemp -d /tmp/mailrestore.XXXXXX)"
-  trap 'rm -rf "$workdir"' EXIT
+  TMP_DIRS+=("$workdir")
 
   info "Extracting to: $workdir"
   tar -xzf "$archive" -C "$workdir" || die "Extract failed"
