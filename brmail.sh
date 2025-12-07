@@ -36,6 +36,42 @@ safe_username() {
   [[ "$1" =~ ^[a-zA-Z0-9._-]+$ ]] || die "Invalid username: $1"
 }
 
+# -------------------------------
+# Safe move Maildir (no overwrite)
+# - If destination exists and is NOT empty -> abort that mailbox
+# - Prefer mv (fast on same FS)
+# - Fallback: cp -a then rm -rf source (still a "move")
+# -------------------------------
+move_maildir_safe() {
+  local src_dir="$1"      # source Maildir directory
+  local dest_dir="$2"     # destination Maildir directory
+
+  [[ -d "$src_dir" ]] || die "Source Maildir not found: $src_dir"
+
+  # If destination exists and has any content, skip to avoid mixing/overwrite
+  if [[ -d "$dest_dir" ]] && find "$dest_dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .; then
+    echo -e "${red}Destination exists and is not empty, skipping to avoid overwrite: $dest_dir${clear}"
+    return 1
+  fi
+
+  # Ensure parent exists
+  mkdir -p "$(dirname "$dest_dir")" || die "mkdir failed: $(dirname "$dest_dir")"
+
+  # If destination exists but empty, remove it so mv can place cleanly
+  [[ -d "$dest_dir" ]] && rmdir "$dest_dir" 2>/dev/null || true
+
+  # Try fast move first
+  if mv "$src_dir" "$dest_dir" 2>/dev/null; then
+    return 0
+  fi
+
+  # Fallback (cross-filesystem): copy then delete source
+  mkdir -p "$dest_dir" || die "mkdir failed: $dest_dir"
+  cp -a "$src_dir/"* "$dest_dir/" 2>/dev/null || true
+  rm -rf "$src_dir" 2>/dev/null || true
+  return 0
+}
+
 # --------- BACKUP (Option 1) ----------
 backup_mail() {
   local panel username src out fqdn url
@@ -64,7 +100,6 @@ backup_mail() {
   info "Source: $src"
   info "Creating: $out"
 
-  # create tar.gz with top-level folder (imap or mail)
   tar -C "/home/$username" -czf "$out" "$(basename "$src")" || die "tar failed"
 
   chmod 744 "$out" || die "chmod failed"
@@ -77,26 +112,17 @@ backup_mail() {
 }
 
 # --------- PATH DETECTION FOR RESTORE ----------
-# We want to support extracting tarballs that contain:
-# - mail/<domain>/... (from cPanel style)
-# - imap/<domain>/... (from DirectAdmin style)
-# And also if user extracted only those folders and runs script inside them.
 detect_mail_or_imap_base() {
-  # outputs two vars via echo: "MAIL_SRC=... IMAP_SRC=..."
   local cur mail_src="" imap_src=""
   cur="$(pwd -P)"
 
   while [[ "$cur" != "/" ]]; do
-    # cpmove style (mail)
     [[ -d "$cur/homedir/mail" ]] && mail_src="$cur/homedir/mail"
-    # plain mail folder
     [[ -d "$cur/mail" ]] && mail_src="$cur/mail"
     [[ "$(basename "$cur")" == "mail" ]] && mail_src="$cur"
-    # plain imap folder
     [[ -d "$cur/imap" ]] && imap_src="$cur/imap"
     [[ "$(basename "$cur")" == "imap" ]] && imap_src="$cur"
 
-    # if we found at least one, we can stop early
     if [[ -n "$mail_src" || -n "$imap_src" ]]; then
       echo "MAIL_SRC=$mail_src IMAP_SRC=$imap_src"
       return 0
@@ -136,11 +162,14 @@ restore_cpanel_to_directadmin() {
     /usr/local/directadmin/scripts/add_email.sh "$EMAIL_USER" "$domain" "$password" 1 0
     echo -e "${cyan}Email account $EMAIL_USER created.${clear}"
 
-    mkdir -p "$DEST_EMAIL_PATH"
-    cp -a "$EMAIL_USER/"* "$DEST_EMAIL_PATH/" 2>/dev/null
+    # SAFE MOVE: move the whole Maildir folder (EMAIL_USER is a Maildir in cPanel backup)
+    if move_maildir_safe "$EMAIL_USER" "$DEST_EMAIL_PATH"; then
+      chown -R "$username:mail" "$DESTINATION_PATH/$EMAIL_USER" 2>/dev/null || true
+      echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
+    else
+      echo -e "${red}$EMAIL_USER skipped due to non-empty destination.\n${clear}"
+    fi
 
-    chown -R "$username:mail" "$DEST_EMAIL_PATH"
-    echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
     sleep 1
   done
   shopt -u dotglob
@@ -180,11 +209,16 @@ restore_directadmin_to_cpanel() {
         }
     }'
 
-    mkdir -p "$DEST_EMAIL_PATH"
-    cp -a "$EMAIL_USER/Maildir/"* "$DEST_EMAIL_PATH/" 2>/dev/null
+    # SAFE MOVE: in DA backup structure, Maildir is inside EMAIL_USER/Maildir
+    if move_maildir_safe "$EMAIL_USER/Maildir" "$DEST_EMAIL_PATH"; then
+      chown -R "$username." "$DEST_EMAIL_PATH" 2>/dev/null || true
+      echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
+      # if EMAIL_USER directory became empty after moving Maildir, remove it
+      rmdir "$EMAIL_USER" 2>/dev/null || true
+    else
+      echo -e "${red}$EMAIL_USER skipped due to non-empty destination.\n${clear}"
+    fi
 
-    chown -R "$username." "$DEST_EMAIL_PATH"
-    echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
     sleep 1
   done
   shopt -u dotglob
@@ -206,9 +240,7 @@ restore_mail() {
 
   read -r -p "Enter path to mail-*.tar.gz (leave empty if script is in same dir): " archive
 
-  # if empty, try to pick a tar.gz in current directory
   if [[ -z "${archive:-}" ]]; then
-    # try mail-*.tar.gz first, otherwise any *.tar.gz
     archive="$(ls -1 mail-*.tar.gz 2>/dev/null | head -n1 || true)"
     [[ -n "$archive" ]] || archive="$(ls -1 *.tar.gz 2>/dev/null | head -n1 || true)"
     [[ -n "$archive" ]] || die "No tar.gz found in current directory. Provide full path."
@@ -216,7 +248,6 @@ restore_mail() {
 
   [[ -f "$archive" ]] || die "Archive not found: $archive"
 
-  # extract to a temporary working directory
   workdir="$(mktemp -d /tmp/mailrestore.XXXXXX)"
   trap 'rm -rf "$workdir"' EXIT
 
@@ -225,12 +256,9 @@ restore_mail() {
 
   cd "$workdir" || die "cd failed"
 
-  # detect bases inside extracted structure
   basevars="$(detect_mail_or_imap_base)"
-  eval "$basevars" 2>/dev/null || true  # sets MAIL_SRC and IMAP_SRC
+  eval "$basevars" 2>/dev/null || true
 
-  # If tar contains top-level "mail" or "imap", MAIL_SRC/IMAP_SRC will be set.
-  # If not, but structure is direct, try to set based on existing dirs:
   [[ -z "${MAIL_SRC:-}" && -d "$workdir/homedir/mail" ]] && MAIL_SRC="$workdir/homedir/mail"
   [[ -z "${MAIL_SRC:-}" && -d "$workdir/mail" ]] && MAIL_SRC="$workdir/mail"
   [[ -z "${IMAP_SRC:-}" && -d "$workdir/imap" ]] && IMAP_SRC="$workdir/imap"
@@ -240,13 +268,11 @@ restore_mail() {
   info "Detected IMAP_SRC: ${IMAP_SRC:-none}"
 
   if [[ "$panel" == "directadmin" ]]; then
-    # Destination is DirectAdmin => expect source is cPanel mail
     [[ -n "${MAIL_SRC:-}" ]] || die "Could not find 'mail' source inside archive."
     ok "*** Restoring Cpanel Emails to DirectAdmin ***"
     restore_cpanel_to_directadmin "$username" "$domain" "$MAIL_SRC"
     ok "*** Restore complete ***"
   else
-    # Destination is cPanel => expect source is DirectAdmin imap
     [[ -n "${IMAP_SRC:-}" ]] || die "Could not find 'imap' source inside archive."
     ok "*** Restoring DirectAdmin Emails to cPanel ***"
     restore_directadmin_to_cpanel "$username" "$domain" "$IMAP_SRC"
