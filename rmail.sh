@@ -9,29 +9,78 @@ echo -e ${green}"\n*** Restore Emails ***"${clear}
 echo -e ${cyan}"\nMake sure to extract backup and run this script in its root directory."${clear}
 
 # -------------------------------
-# ONLY ADD: detect backup root (directory that contains "homedir/")
-# This allows running script from inside homedir/mail (or deeper)
+# ONLY CHANGE: detect base paths for:
+#   - cPanel backup mail source (homedir/mail OR mail)
+#   - DirectAdmin backup imap source (imap)
+#
+# Supports running from:
+#   - backup root
+#   - inside homedir/mail or mail or imap (or deeper)
+#   - mail-only (/root/mail) or imap-only (/root/imap)
+#
+# Sets:
+#   WORKDIR  -> directory we cd into (some stable base)
+#   MAIL_SRC -> mail base dir (ends with /mail) when present
+#   IMAP_SRC -> imap base dir (ends with /imap) when present
 # -------------------------------
-detect_backup_root() {
+detect_paths() {
   local cur
   cur="$(pwd -P)"
+
+  WORKDIR=""
+  MAIL_SRC=""
+  IMAP_SRC=""
+
   while [[ "$cur" != "/" ]]; do
-    if [[ -d "$cur/homedir" ]]; then
-      echo "$cur"
+    # cpmove style
+    if [[ -d "$cur/homedir/mail" ]]; then
+      WORKDIR="$cur"
+      MAIL_SRC="$cur/homedir/mail"
+      # keep walking? no need
       return 0
     fi
+
+    # mail-only root style (contains mail/)
+    if [[ -d "$cur/mail" ]]; then
+      WORKDIR="$cur"
+      MAIL_SRC="$cur/mail"
+      return 0
+    fi
+
+    # imap-only root style (contains imap/)
+    if [[ -d "$cur/imap" ]]; then
+      WORKDIR="$cur"
+      IMAP_SRC="$cur/imap"
+      return 0
+    fi
+
+    # if we are already inside a "mail" directory
+    if [[ "$(basename "$cur")" == "mail" ]]; then
+      WORKDIR="$cur"
+      MAIL_SRC="$cur"
+      return 0
+    fi
+
+    # if we are already inside an "imap" directory
+    if [[ "$(basename "$cur")" == "imap" ]]; then
+      WORKDIR="$cur"
+      IMAP_SRC="$cur"
+      return 0
+    fi
+
     cur="$(dirname "$cur")"
   done
+
   return 1
 }
 
-BACKUP_ROOT="$(detect_backup_root)" || {
-  echo -e ${red}"Couldn't detect backup root (missing homedir/). Aborting...\n"${clear}
+detect_paths || {
+  echo -e ${red}"Couldn't detect backup base (missing homedir/mail, mail or imap). Aborting...\n"${clear}
   exit 1
 }
 
-cd "$BACKUP_ROOT" || {
-  echo -e ${red}"Couldn't access backup root. Aborting...\n"${clear}
+cd "$WORKDIR" || {
+  echo -e ${red}"Couldn't access working directory. Aborting...\n"${clear}
   exit 1
 }
 
@@ -55,13 +104,19 @@ echo -e ${cyan}"Control panel detected: ${green}DirectAdmin"${clear}
 echo -e ${green}"*** Restoring Cpanel Emails to DirectAdmin ***"${clear}
 sleep 2
 
-# check email directory in backup
-if [ ! -d "./homedir/mail/$domain" ]; then
-  echo -e ${red}"Email path not found in backup. Aborting... "${clear}
+# Ensure MAIL_SRC exists for this direction
+if [[ -z "$MAIL_SRC" ]]; then
+  echo -e ${red}"Couldn't detect mail source path (homedir/mail or mail). Aborting..."${clear}
   exit 1
 fi
 
-cd "./homedir/mail/$domain" || exit 1
+# check email directory in backup
+if [ ! -d "$MAIL_SRC/$domain" ]; then
+  echo -e ${red}"Email path not found in backup: $MAIL_SRC/$domain. Aborting... "${clear}
+  exit 1
+fi
+
+cd "$MAIL_SRC/$domain" || exit 1
 DESTINATION_PATH="/home/$username/imap/$domain"
 
 shopt -s dotglob
@@ -97,12 +152,19 @@ echo -e ${cyan}"Control panel detected: ${green}cPanel"${clear}
 echo -e ${green}"*** Restoring DirectAdmin Emails to Cpanel ***"${clear}
 sleep 2
 
-if [ ! -d "./imap/$domain" ]; then
-  echo -e ${red}"Email path not found in backup. Aborting... "${clear}
+# Ensure IMAP_SRC exists for this direction
+if [[ -z "$IMAP_SRC" ]]; then
+  echo -e ${red}"Couldn't detect imap source path (imap). Aborting..."${clear}
   exit 1
 fi
 
-cd "./imap/$domain" || exit 1
+# check email directory in backup
+if [ ! -d "$IMAP_SRC/$domain" ]; then
+  echo -e ${red}"Email path not found in backup: $IMAP_SRC/$domain. Aborting... "${clear}
+  exit 1
+fi
+
+cd "$IMAP_SRC/$domain" || exit 1
 DESTINATION_PATH="/home/$username/mail/$domain"
 
 shopt -s dotglob
