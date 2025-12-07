@@ -1,19 +1,21 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # by i.sharifi & e.yazdanpanah - updated 2025
 
-green='\033[0;32m'
-cyan='\033[0;36m'
-red='\033[0;31m'
-clear='\033[0m'
+set -Eeuo pipefail
 
-echo -e ${green}"\n*** Restore Emails ***"${clear}
+green=$'\033[0;32m'
+cyan=$'\033[0;36m'
+red=$'\033[0;31m'
+clear=$'\033[0m'
+
+printf "%s\n\n" "${green}*** Restore Emails ***${clear}"
 
 # -------------------------------
 # Detect mail source base
 # Supports:
-#   - cpmove root: ./homedir/mail
-#   - mail-only backup: ./mail
-#   - running from inside homedir/mail or mail or deeper
+#   - cpmove root: <root>/homedir/mail
+#   - mail-only backup: <root>/mail
+#   - running from inside homedir/mail or mail (or deeper)
 # Returns: absolute path to mail base (ends with /mail)
 # -------------------------------
 detect_mail_base() {
@@ -21,22 +23,18 @@ detect_mail_base() {
   cur="$(pwd -P)"
 
   while [[ "$cur" != "/" ]]; do
-    # case 1: cpmove root style
     if [[ -d "$cur/homedir/mail" ]]; then
-      echo "$cur/homedir/mail"
+      printf "%s\n" "$cur/homedir/mail"
       return 0
     fi
-    # case 2: mail-only extracted (contains ./mail/<domain>/...)
     if [[ -d "$cur/mail" ]]; then
-      echo "$cur/mail"
+      printf "%s\n" "$cur/mail"
       return 0
     fi
-    # case 3: we are already inside .../homedir/mail
     if [[ "$(basename "$cur")" == "mail" ]]; then
-      echo "$cur"
+      printf "%s\n" "$cur"
       return 0
     fi
-
     cur="$(dirname "$cur")"
   done
 
@@ -44,158 +42,93 @@ detect_mail_base() {
 }
 
 MAIL_BASE="$(detect_mail_base)" || {
-  echo -e ${red}"ERROR: Could not detect mail backup base. Expected one of:"${clear}
-  echo -e ${red}"  - cpmove style: <root>/homedir/mail/"${clear}
-  echo -e ${red}"  - mail-only:    <root>/mail/"${clear}
+  printf "%s\n" "${red}ERROR: Could not detect mail backup base (expected homedir/mail or mail).${clear}"
   exit 1
 }
 
-echo -e ${cyan}"Mail source detected: ${green}$MAIL_BASE${clear}
+printf "%s\n" "${cyan}Mail source detected: ${green}${MAIL_BASE}${clear}"
 
-echo -en "Enter username: "
-read -r username
+read -r -p "Enter username: " username
 
-pass2=2Ab@;
+# suffix ثابت پسورد (اگر لازم داری)
+pass2='2Ab@'
 
-# check if user exists
 if [[ ! -d "/home/$username" ]]; then
-  echo -e ${red}"Couldn't find username on this server. Aborting...\n"${clear}
+  printf "%s\n" "${red}Couldn't find username on this server. Aborting...${clear}"
   exit 1
 fi
 
-# -----------------------------------------
-# Domain helper: list available domains
-# from detected MAIL_BASE
-# -----------------------------------------
 choose_domain_from_mailbase() {
   local base="$1"
-  local domains=()
-  local i=1 choice
+  local -a domains=()
+  local d choice
 
   while IFS= read -r -d '' d; do
     domains+=("$(basename "$d")")
   done < <(find "$base" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
 
-  if [[ ${#domains[@]} -gt 0 ]]; then
-    echo -e ${cyan}"\nAvailable domains found:"${clear}
-    for d in "${domains[@]}"; do
-      echo -e "  ${green}[$i]${clear} $d"
-      ((i++))
+  if (( ${#domains[@]} > 0 )); then
+    printf "%s\n" "${cyan}Available domains found:${clear}"
+    for i in "${!domains[@]}"; do
+      printf "  %s[%d]%s %s\n" "$green" "$((i+1))" "$clear" "${domains[$i]}"
     done
 
-    echo -en $cyan"\nSelect domain by number (or press Enter to type manually): "$clear
-    read -r choice
+    read -r -p "Select domain by number (or press Enter to type manually): " choice
 
-    if [[ -n "$choice" && "$choice" =~ ^[0-9]+$ ]]; then
-      if (( choice >= 1 && choice <= ${#domains[@]} )); then
-        echo "${domains[choice-1]}"
-        return 0
-      else
-        echo -e ${red}"Invalid selection. Falling back to manual input."${clear}
-      fi
+    if [[ -n "${choice:-}" && "$choice" =~ ^[0-9]+$ ]] && (( choice>=1 && choice<=${#domains[@]} )); then
+      printf "%s\n" "${domains[$((choice-1))]}"
+      return 0
     fi
   fi
 
-  echo -en "Enter domain: "
-  read -r domain_manual
-  echo "$domain_manual"
+  read -r -p "Enter domain: " domain_manual
+  printf "%s\n" "$domain_manual"
 }
 
 domain="$(choose_domain_from_mailbase "$MAIL_BASE")"
-
-if [[ -z "$domain" ]]; then
-  echo -e ${red}"ERROR: Domain is empty. Aborting..."${clear}
+if [[ -z "${domain:-}" ]]; then
+  printf "%s\n" "${red}ERROR: Domain is empty. Aborting...${clear}"
   exit 1
 fi
 
-if [[ -d /usr/local/directadmin ]] ; then
-##################################
-# --- Cpanel to Directadmin --- #
-##################################
-echo -e ${cyan}"Control panel detected: ${green}DirectAdmin"${clear}
-echo -e ${green}"*** Restoring Cpanel Emails to DirectAdmin ***"${clear}
-sleep 1
+if [[ -d /usr/local/directadmin ]]; then
+  printf "%s\n" "${cyan}Control panel detected: ${green}DirectAdmin${clear}"
+  printf "%s\n" "${green}*** Restoring Cpanel Emails to DirectAdmin ***${clear}"
 
-# check email directory in backup (now based on MAIL_BASE)
-if [[ ! -d "$MAIL_BASE/$domain" ]]; then
-  echo -e ${red}"Email path not found in backup: $MAIL_BASE/$domain. Aborting..."${clear}
-  exit 1
-fi
+  if [[ ! -d "$MAIL_BASE/$domain" ]]; then
+    printf "%s\n" "${red}Email path not found in backup: $MAIL_BASE/$domain${clear}"
+    exit 1
+  fi
 
-cd "$MAIL_BASE/$domain" || exit 1
-DESTINATION_PATH="/home/$username/imap/$domain"
+  cd "$MAIL_BASE/$domain"
+  DESTINATION_PATH="/home/$username/imap/$domain"
 
-shopt -s dotglob
-for EMAIL_USER in *; do
-  [[ -d "$EMAIL_USER" ]] || continue
+  shopt -s dotglob
+  for EMAIL_USER in *; do
+    [[ -d "$EMAIL_USER" ]] || continue
 
-  DEST_EMAIL_PATH="$DESTINATION_PATH/$EMAIL_USER/Maildir"
+    DEST_EMAIL_PATH="$DESTINATION_PATH/$EMAIL_USER/Maildir"
 
-  # Generate password
-  password="$(tr -dc 'A-Za-z0-9!@#$%^&*()=<>?' < /dev/urandom | head -c 12)"
-  password+=$pass2
+    # پسورد مطمئن و ساده:
+    # 12 کاراکتر + suffix
+    password="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12)${pass2}"
 
-  # Create email account
-  /usr/local/directadmin/scripts/add_email.sh "$EMAIL_USER" "$domain" "$password" 1 0
-  echo -e ${cyan}"Email account $EMAIL_USER created."${clear}
+    /usr/local/directadmin/scripts/add_email.sh "$EMAIL_USER" "$domain" "$password" 1 0
+    printf "%s\n" "${cyan}Email account ${EMAIL_USER} created.${clear}"
 
-  mkdir -p "$DEST_EMAIL_PATH"
-  cp -a "$EMAIL_USER/"* "$DEST_EMAIL_PATH/" 2>/dev/null
+    mkdir -p "$DEST_EMAIL_PATH"
+    cp -a "$EMAIL_USER/"* "$DEST_EMAIL_PATH/" 2>/dev/null || true
 
-  chown -R "$username:mail" "$DEST_EMAIL_PATH"
-  echo -e ${green}"$EMAIL_USER restored successfully.\n"${clear}
-  sleep 1
-done
-shopt -u dotglob
+    chown -R "$username:mail" "$DEST_EMAIL_PATH"
+    printf "%s\n\n" "${green}${EMAIL_USER} restored successfully.${clear}"
+  done
+  shopt -u dotglob
 
-echo -e ${green}"*** Restore complete ***"${clear}
+  printf "%s\n" "${green}*** Restore complete ***${clear}"
 
 else
-#################################
-# --- DirectAdmin to Cpanel --- #
-#################################
-echo -e ${cyan}"Control panel detected: ${green}cPanel"${clear}
-echo -e ${green}"*** Restoring DirectAdmin Emails to Cpanel ***"${clear}
-sleep 2
-
-# NOTE: این شاخه هنوز مثل قبل فرض می‌کنه بکاپ DA داری (./imap/$domain)
-# اگر خواستی اینم مثل mail-only قابل تشخیص بشه، جدا بهش می‌زنیم.
-if [[ ! -d "./imap/$domain" ]]; then
-  echo -e ${red}"Email path not found in backup. Aborting... "${clear}
+  printf "%s\n" "${cyan}Control panel detected: ${green}cPanel${clear}"
+  printf "%s\n" "${green}*** Restoring DirectAdmin Emails to Cpanel ***${clear}"
+  printf "%s\n" "${red}NOTE: This branch still expects a DA backup structure (./imap/<domain>).${clear}"
   exit 1
-fi
-
-cd "./imap/$domain" || exit 1
-DESTINATION_PATH="/home/$username/mail/$domain"
-
-shopt -s dotglob
-for EMAIL_USER in *; do
-  [[ -d "$EMAIL_USER/Maildir" ]] || continue
-
-  DEST_EMAIL_PATH="$DESTINATION_PATH/$EMAIL_USER"
-  password="$(tr -dc 'A-Za-z0-9!@#$%^&*()=<>?' < /dev/urandom | head -c 12)"
-  password+=$pass2
-
-  uapi --user="$username" Email add_pop email="${EMAIL_USER}@${domain}" password="$password" | awk -v email_user="$EMAIL_USER" '
-  /errors/ {
-      if ($2 == "~") {
-          print "\033[32mEmail " email_user " created successfully.\033[0m"
-      } else {
-          print "\033[31m" $0 "\033[0m"
-          getline
-          print "\033[31m" $0 "\033[0m"
-      }
-  }'
-
-  mkdir -p "$DEST_EMAIL_PATH"
-  cp -a "$EMAIL_USER/Maildir/"* "$DEST_EMAIL_PATH/" 2>/dev/null
-
-  chown -R "$username." "$DEST_EMAIL_PATH"
-  echo -e ${green}"$EMAIL_USER restored successfully.\n"${clear}
-  sleep 1
-done
-shopt -u dotglob
-
-echo -e ${green}"*** Restore complete ***"${clear}
-
 fi
