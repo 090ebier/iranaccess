@@ -8,6 +8,7 @@ red='\033[0;31m'
 clear='\033[0m'
 
 WWW_DIR="/var/www/html"
+TMP_BASE="/home/rbmailtmp"
 
 die() { echo -e "${red}$*${clear}"; exit 1; }
 info() { echo -e "${cyan}$*${clear}"; }
@@ -27,6 +28,12 @@ detect_panel() {
 
 ensure_www_dir() { [[ -d "$WWW_DIR" ]] || die "Web directory not found: $WWW_DIR"; }
 safe_username() { [[ "$1" =~ ^[a-zA-Z0-9._-]+$ ]] || die "Invalid username: $1"; }
+
+ensure_tmp_base() {
+  mkdir -p "$TMP_BASE" || die "Cannot create tmp base: $TMP_BASE"
+  chmod 1777 "$TMP_BASE" 2>/dev/null || true
+  export TMPDIR="$TMP_BASE"
+}
 
 # -------------------------------
 # Global tmp cleanup
@@ -196,7 +203,8 @@ restore_mail() {
   fi
   [[ -f "$archive" ]] || die "Archive not found: $archive"
 
-  workdir="$(mktemp -d /tmp/mailrestore.XXXXXX)"
+  ensure_tmp_base
+  workdir="$(mktemp -d -p "$TMP_BASE" mailrestore.XXXXXX)" || die "mktemp failed"
   TMP_DIRS+=("$workdir")
 
   info "Extracting to: $workdir"
