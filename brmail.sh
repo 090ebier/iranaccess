@@ -13,12 +13,9 @@ die() { echo -e "${red}$*${clear}"; exit 1; }
 info() { echo -e "${cyan}$*${clear}"; }
 ok() { echo -e "${green}$*${clear}"; }
 
-need_root() {
-  [[ $EUID -eq 0 ]] || die "Run as root."
-}
+need_root() { [[ $EUID -eq 0 ]] || die "Run as root."; }
 
 detect_panel() {
-  # returns: directadmin | cpanel | unknown
   if [[ -d /usr/local/directadmin ]]; then
     echo "directadmin"
   elif [[ -d /usr/local/cpanel ]]; then
@@ -28,50 +25,77 @@ detect_panel() {
   fi
 }
 
-ensure_www_dir() {
-  [[ -d "$WWW_DIR" ]] || die "Web directory not found: $WWW_DIR"
-}
-
-safe_username() {
-  [[ "$1" =~ ^[a-zA-Z0-9._-]+$ ]] || die "Invalid username: $1"
-}
+ensure_www_dir() { [[ -d "$WWW_DIR" ]] || die "Web directory not found: $WWW_DIR"; }
+safe_username() { [[ "$1" =~ ^[a-zA-Z0-9._-]+$ ]] || die "Invalid username: $1"; }
 
 # -------------------------------
-# Global tmp cleanup (always cleans, unless SIGKILL)
+# Global tmp cleanup
 # -------------------------------
 TMP_DIRS=()
-cleanup_tmp() {
-  for d in "${TMP_DIRS[@]}"; do
-    [[ -n "$d" && -d "$d" ]] && rm -rf "$d"
-  done
-}
+cleanup_tmp() { for d in "${TMP_DIRS[@]}"; do [[ -n "$d" && -d "$d" ]] && rm -rf "$d"; done; }
 trap cleanup_tmp EXIT INT TERM
 
 # -------------------------------
-# Safe replace Maildir:
-# - If destination exists, move it aside as .bak-TIMESTAMP
-# - Then move source into place (fast mv if possible)
-# - Fallback: copy then delete source
+# Detect "skeleton" Maildir created by panel (empty mailbox):
+# - Must have cur/new/tmp directories
+# - Must have NO files inside cur/ or new/
+# - tmp/ may contain temp files but usually empty; we ignore tmp content
+# - If there are ANY files under cur/new => NOT skeleton (has real messages)
 # -------------------------------
-replace_maildir_safe() {
-  local src_dir="$1"      # source Maildir directory
-  local dest_dir="$2"     # destination Maildir directory
+is_skeleton_maildir() {
+  local d="$1"
+  [[ -d "$d" ]] || return 1
+  [[ -d "$d/cur" && -d "$d/new" && -d "$d/tmp" ]] || return 1
+
+  # any file under cur or new => has emails (not skeleton)
+  if find "$d/cur" "$d/new" -type f -print -quit 2>/dev/null | grep -q .; then
+    return 1
+  fi
+
+  return 0
+}
+
+# Remove destination Maildir ONLY if it is a skeleton empty mailbox
+remove_dest_if_skeleton() {
+  local d="$1"
+  if [[ -d "$d" ]]; then
+    if is_skeleton_maildir "$d"; then
+      rm -rf "$d" 2>/dev/null || die "Failed to remove empty skeleton Maildir: $d"
+      return 0
+    fi
+    return 1
+  fi
+  return 0
+}
+
+# -------------------------------
+# Move Maildir into place:
+# - Prefer mv (fast if same FS)
+# - If mv fails (cross FS), fallback to cp -a + rm -rf (still results in move)
+# -------------------------------
+move_maildir_into_place() {
+  local src_dir="$1"
+  local dest_dir="$2"
 
   [[ -d "$src_dir" ]] || die "Source Maildir not found: $src_dir"
   mkdir -p "$(dirname "$dest_dir")" || die "mkdir failed: $(dirname "$dest_dir")"
 
+  # If destination exists and is NOT skeleton -> skip (protect real data)
   if [[ -d "$dest_dir" ]]; then
-    local ts bak
-    ts="$(date +%F_%H%M%S)"
-    bak="${dest_dir}.bak-${ts}"
-    mv "$dest_dir" "$bak" || die "Failed to backup existing Maildir: $dest_dir -> $bak"
-    echo -e "${cyan}Existing Maildir backed up to: $bak${clear}"
+    if remove_dest_if_skeleton "$dest_dir"; then
+      : # removed skeleton, ok to proceed
+    else
+      echo -e "${red}Destination has data (not empty skeleton), skipping to avoid overwrite: $dest_dir${clear}"
+      return 1
+    fi
   fi
 
+  # Try fast move
   if mv "$src_dir" "$dest_dir" 2>/dev/null; then
     return 0
   fi
 
+  # Fallback (cross-FS): copy then delete
   mkdir -p "$dest_dir" || die "mkdir failed: $dest_dir"
   cp -a "$src_dir/"* "$dest_dir/" 2>/dev/null || true
   rm -rf "$src_dir" 2>/dev/null || true
@@ -87,7 +111,6 @@ backup_mail() {
 
   read -r -p "Enter source username to backup: " username
   safe_username "$username"
-
   [[ -d "/home/$username" ]] || die "User home not found: /home/$username"
 
   if [[ "$panel" == "directadmin" ]]; then
@@ -95,11 +118,9 @@ backup_mail() {
   else
     src="/home/$username/mail"
   fi
-
   [[ -d "$src" ]] || die "Mail directory not found: $src"
 
   ensure_www_dir
-
   out="${WWW_DIR}/mail-${username}.tar.gz"
 
   info "Panel: $panel"
@@ -107,7 +128,6 @@ backup_mail() {
   info "Creating: $out"
 
   tar -C "/home/$username" -czf "$out" "$(basename "$src")" || die "tar failed"
-
   chmod 744 "$out" || die "chmod failed"
 
   fqdn="$(hostname -f 2>/dev/null || hostname)"
@@ -119,7 +139,6 @@ backup_mail() {
 
 # --------- PATH DETECTION FOR RESTORE ----------
 detect_mail_or_imap_base() {
-  # outputs two vars via echo: "MAIL_SRC=... IMAP_SRC=..."
   local cur mail_src="" imap_src=""
   cur="$(pwd -P)"
 
@@ -145,14 +164,11 @@ detect_mail_or_imap_base() {
 # --------- RESTORE HELPERS ----------
 restore_cpanel_to_directadmin() {
   local username domain pass2 mail_src
-  username="$1"
-  domain="$2"
-  mail_src="$3"
+  username="$1"; domain="$2"; mail_src="$3"
   pass2='2Ab@'
 
   [[ -n "$mail_src" ]] || die "MAIL source not detected."
   [[ -d "$mail_src/$domain" ]] || die "Mail path not found: $mail_src/$domain"
-
   cd "$mail_src/$domain" || die "cd failed"
 
   local DESTINATION_PATH="/home/$username/imap/$domain"
@@ -163,20 +179,21 @@ restore_cpanel_to_directadmin() {
 
     local DEST_EMAIL_PATH="$DESTINATION_PATH/$EMAIL_USER/Maildir"
 
+    # 1) Create mailbox/user (DA creates skeleton Maildir)
     local password
     password=$(tr -dc 'A-Za-z0-9!@#$%^&*()=<>?' < /dev/urandom | head -c 12)
     password+=$pass2
-
     /usr/local/directadmin/scripts/add_email.sh "$EMAIL_USER" "$domain" "$password" 1 0
     echo -e "${cyan}Email account $EMAIL_USER created.${clear}"
 
-    # Replace Maildir safely (backup existing dest if any)
-    replace_maildir_safe "$EMAIL_USER" "$DEST_EMAIL_PATH"
+    # 2) Move data into place (will delete skeleton Maildir only if empty)
+    if move_maildir_into_place "$EMAIL_USER" "$DEST_EMAIL_PATH"; then
+      chown -R "$username:mail" "$DESTINATION_PATH/$EMAIL_USER" 2>/dev/null || true
+      echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
+    else
+      echo -e "${red}$EMAIL_USER skipped.\n${clear}"
+    fi
 
-    # Fix ownership
-    chown -R "$username:mail" "$DESTINATION_PATH/$EMAIL_USER" 2>/dev/null || true
-
-    echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
     sleep 1
   done
   shopt -u dotglob
@@ -184,14 +201,11 @@ restore_cpanel_to_directadmin() {
 
 restore_directadmin_to_cpanel() {
   local username domain pass2 imap_src
-  username="$1"
-  domain="$2"
-  imap_src="$3"
+  username="$1"; domain="$2"; imap_src="$3"
   pass2='2Ab@'
 
   [[ -n "$imap_src" ]] || die "IMAP source not detected."
   [[ -d "$imap_src/$domain" ]] || die "IMAP path not found: $imap_src/$domain"
-
   cd "$imap_src/$domain" || die "cd failed"
 
   local DESTINATION_PATH="/home/$username/mail/$domain"
@@ -201,6 +215,8 @@ restore_directadmin_to_cpanel() {
     [[ -d "$EMAIL_USER/Maildir" ]] || continue
 
     local DEST_EMAIL_PATH="$DESTINATION_PATH/$EMAIL_USER"
+
+    # 1) Create mailbox/user in cPanel (creates skeleton)
     local password
     password=$(tr -dc 'A-Za-z0-9!@#$%^&*()=<>?' < /dev/urandom | head -c 12)
     password+=$pass2
@@ -216,16 +232,15 @@ restore_directadmin_to_cpanel() {
         }
     }'
 
-    # Replace Maildir safely (backup existing dest if any)
-    replace_maildir_safe "$EMAIL_USER/Maildir" "$DEST_EMAIL_PATH"
+    # 2) Move data into place (will delete skeleton only if empty)
+    if move_maildir_into_place "$EMAIL_USER/Maildir" "$DEST_EMAIL_PATH"; then
+      rmdir "$EMAIL_USER" 2>/dev/null || true
+      chown -R "$username." "$DEST_EMAIL_PATH" 2>/dev/null || true
+      echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
+    else
+      echo -e "${red}$EMAIL_USER skipped.\n${clear}"
+    fi
 
-    # Remove empty wrapper dir if possible
-    rmdir "$EMAIL_USER" 2>/dev/null || true
-
-    # Fix ownership
-    chown -R "$username." "$DEST_EMAIL_PATH" 2>/dev/null || true
-
-    echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
     sleep 1
   done
   shopt -u dotglob
@@ -246,13 +261,11 @@ restore_mail() {
   [[ -n "$domain" ]] || die "Domain is empty."
 
   read -r -p "Enter path to mail-*.tar.gz (leave empty if script is in same dir): " archive
-
   if [[ -z "${archive:-}" ]]; then
     archive="$(ls -1 mail-*.tar.gz 2>/dev/null | head -n1 || true)"
     [[ -n "$archive" ]] || archive="$(ls -1 *.tar.gz 2>/dev/null | head -n1 || true)"
     [[ -n "$archive" ]] || die "No tar.gz found in current directory. Provide full path."
   fi
-
   [[ -f "$archive" ]] || die "Archive not found: $archive"
 
   workdir="$(mktemp -d /tmp/mailrestore.XXXXXX)"
@@ -260,7 +273,6 @@ restore_mail() {
 
   info "Extracting to: $workdir"
   tar -xzf "$archive" -C "$workdir" || die "Extract failed"
-
   cd "$workdir" || die "cd failed"
 
   basevars="$(detect_mail_or_imap_base)"
@@ -290,7 +302,6 @@ restore_mail() {
 # --------- MAIN MENU ----------
 main() {
   need_root
-
   info "Detected panel: $(detect_panel)"
   echo
   echo "1) Backup emails of a user (tar.gz to /var/www/html and show link)"
