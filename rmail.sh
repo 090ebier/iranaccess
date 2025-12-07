@@ -55,6 +55,9 @@ echo -e "${cyan}Mail source detected: ${green}$MAIL_BASE${clear}"
 echo -en "Enter username: "
 read -r username
 
+echo -en "Enter domain: "
+read -r domain
+
 pass2='2Ab@'
 
 # check if user exists
@@ -62,46 +65,6 @@ if [[ ! -d "/home/$username" ]]; then
   echo -e "${red}Couldn't find username on this server. Aborting...\n${clear}"
   exit 1
 fi
-
-# -----------------------------------------
-# Domain helper: list available domains
-# from detected MAIL_BASE
-# -----------------------------------------
-choose_domain_from_mailbase() {
-  local base="$1"
-  local domains=()
-  local i=1 choice d
-
-  while IFS= read -r -d '' d; do
-    domains+=("$(basename "$d")")
-  done < <(find "$base" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
-
-  if [[ ${#domains[@]} -gt 0 ]]; then
-    echo -e "${cyan}\nAvailable domains found:${clear}"
-    for d in "${domains[@]}"; do
-      echo -e "  ${green}[$i]${clear} $d"
-      ((i++))
-    done
-
-    echo -en "${cyan}\nSelect domain by number (or press Enter to type manually): ${clear}"
-    read -r choice
-
-    if [[ -n "${choice:-}" && "$choice" =~ ^[0-9]+$ ]]; then
-      if (( choice >= 1 && choice <= ${#domains[@]} )); then
-        echo "${domains[choice-1]}"
-        return 0
-      else
-        echo -e "${red}Invalid selection. Falling back to manual input.${clear}"
-      fi
-    fi
-  fi
-
-  echo -en "Enter domain: "
-  read -r domain_manual
-  echo "$domain_manual"
-}
-
-domain="$(choose_domain_from_mailbase "$MAIL_BASE")"
 
 if [[ -z "${domain:-}" ]]; then
   echo -e "${red}ERROR: Domain is empty. Aborting...${clear}"
@@ -159,7 +122,6 @@ else
   sleep 2
 
   # NOTE: این شاخه هنوز مثل قبل فرض می‌کنه بکاپ DA داری (./imap/$domain)
-  # اگر خواستی اینم مثل mail-only قابل تشخیص بشه، جدا بهش می‌زنیم.
   if [[ ! -d "./imap/$domain" ]]; then
     echo -e "${red}Email path not found in backup. Aborting... ${clear}"
     exit 1
