@@ -35,73 +35,6 @@ TMP_DIRS=()
 cleanup_tmp() { for d in "${TMP_DIRS[@]}"; do [[ -n "$d" && -d "$d" ]] && rm -rf "$d"; done; }
 trap cleanup_tmp EXIT INT TERM
 
-# -------------------------------
-# Detect "skeleton" Maildir created by panel (empty mailbox):
-# - Must have cur/new/tmp directories
-# - Must have NO files inside cur/ or new/
-# - tmp/ may contain temp files but usually empty; we ignore tmp content
-# - If there are ANY files under cur/new => NOT skeleton (has real messages)
-# -------------------------------
-is_skeleton_maildir() {
-  local d="$1"
-  [[ -d "$d" ]] || return 1
-  [[ -d "$d/cur" && -d "$d/new" && -d "$d/tmp" ]] || return 1
-
-  # any file under cur or new => has emails (not skeleton)
-  if find "$d/cur" "$d/new" -type f -print -quit 2>/dev/null | grep -q .; then
-    return 1
-  fi
-
-  return 0
-}
-
-# Remove destination Maildir ONLY if it is a skeleton empty mailbox
-remove_dest_if_skeleton() {
-  local d="$1"
-  if [[ -d "$d" ]]; then
-    if is_skeleton_maildir "$d"; then
-      rm -rf "$d" 2>/dev/null || die "Failed to remove empty skeleton Maildir: $d"
-      return 0
-    fi
-    return 1
-  fi
-  return 0
-}
-
-# -------------------------------
-# Move Maildir into place:
-# - Prefer mv (fast if same FS)
-# - If mv fails (cross FS), fallback to cp -a + rm -rf (still results in move)
-# -------------------------------
-move_maildir_into_place() {
-  local src_dir="$1"
-  local dest_dir="$2"
-
-  [[ -d "$src_dir" ]] || die "Source Maildir not found: $src_dir"
-  mkdir -p "$(dirname "$dest_dir")" || die "mkdir failed: $(dirname "$dest_dir")"
-
-  # If destination exists and is NOT skeleton -> skip (protect real data)
-  if [[ -d "$dest_dir" ]]; then
-    if remove_dest_if_skeleton "$dest_dir"; then
-      : # removed skeleton, ok to proceed
-    else
-      echo -e "${red}Destination has data (not empty skeleton), skipping to avoid overwrite: $dest_dir${clear}"
-      return 1
-    fi
-  fi
-
-  # Try fast move
-  if mv "$src_dir" "$dest_dir" 2>/dev/null; then
-    return 0
-  fi
-
-  # Fallback (cross-FS): copy then delete
-  mkdir -p "$dest_dir" || die "mkdir failed: $dest_dir"
-  cp -a "$src_dir/"* "$dest_dir/" 2>/dev/null || true
-  rm -rf "$src_dir" 2>/dev/null || true
-  return 0
-}
-
 # --------- BACKUP (Option 1) ----------
 backup_mail() {
   local panel username src out fqdn url
@@ -179,21 +112,19 @@ restore_cpanel_to_directadmin() {
 
     local DEST_EMAIL_PATH="$DESTINATION_PATH/$EMAIL_USER/Maildir"
 
-    # 1) Create mailbox/user (DA creates skeleton Maildir)
+    # Create mailbox
     local password
     password=$(tr -dc 'A-Za-z0-9!@#$%^&*()=<>?' < /dev/urandom | head -c 12)
     password+=$pass2
     /usr/local/directadmin/scripts/add_email.sh "$EMAIL_USER" "$domain" "$password" 1 0
     echo -e "${cyan}Email account $EMAIL_USER created.${clear}"
 
-    # 2) Move data into place (will delete skeleton Maildir only if empty)
-    if move_maildir_into_place "$EMAIL_USER" "$DEST_EMAIL_PATH"; then
-      chown -R "$username:mail" "$DESTINATION_PATH/$EMAIL_USER" 2>/dev/null || true
-      echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
-    else
-      echo -e "${red}$EMAIL_USER skipped.\n${clear}"
-    fi
+    # Merge copy: copy whole Maildir tree into destination (no glob issues)
+    mkdir -p "$DEST_EMAIL_PATH"
+    cp -a "$EMAIL_USER/." "$DEST_EMAIL_PATH/" 2>/dev/null || true
 
+    chown -R "$username:mail" "$DESTINATION_PATH/$EMAIL_USER" 2>/dev/null || true
+    echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
     sleep 1
   done
   shopt -u dotglob
@@ -216,7 +147,7 @@ restore_directadmin_to_cpanel() {
 
     local DEST_EMAIL_PATH="$DESTINATION_PATH/$EMAIL_USER"
 
-    # 1) Create mailbox/user in cPanel (creates skeleton)
+    # Create mailbox
     local password
     password=$(tr -dc 'A-Za-z0-9!@#$%^&*()=<>?' < /dev/urandom | head -c 12)
     password+=$pass2
@@ -232,15 +163,12 @@ restore_directadmin_to_cpanel() {
         }
     }'
 
-    # 2) Move data into place (will delete skeleton only if empty)
-    if move_maildir_into_place "$EMAIL_USER/Maildir" "$DEST_EMAIL_PATH"; then
-      rmdir "$EMAIL_USER" 2>/dev/null || true
-      chown -R "$username." "$DEST_EMAIL_PATH" 2>/dev/null || true
-      echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
-    else
-      echo -e "${red}$EMAIL_USER skipped.\n${clear}"
-    fi
+    # Merge copy: copy Maildir contents into cPanel mailbox directory
+    mkdir -p "$DEST_EMAIL_PATH"
+    cp -a "$EMAIL_USER/Maildir/." "$DEST_EMAIL_PATH/" 2>/dev/null || true
 
+    chown -R "$username." "$DEST_EMAIL_PATH" 2>/dev/null || true
+    echo -e "${green}$EMAIL_USER restored successfully.\n${clear}"
     sleep 1
   done
   shopt -u dotglob
