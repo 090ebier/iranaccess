@@ -182,15 +182,71 @@ for path in "${PHP_PATHS[@]}"; do
   echo -e "${OK} Found PHP version: ${CYAN}${ver}${RESET}"
 done
 
-read -p "Apply to all PHP versions? (y/n): " apply_all
-if [[ "$apply_all" =~ ^[Nn]$ ]]; then
-  read -p "Enter PHP version (e.g., 81 or 74): " ver_input
-  PHP_PATHS=($(ls -d /usr/local/php${ver_input}/lib/php.ini 2>/dev/null))
+# --- Select target PHP versions (smart input) ---
+echo "$SEP"
+echo -e "${CYAN}Which PHP versions should be updated?${RESET}"
+echo -e "  - Press Enter or type 'all' for ALL detected versions"
+echo -e "  - Or enter versions separated by space, e.g: 74 81 83"
+echo -e "    (also accepts: 7.4 8.1 php74 php81)"
+read -p "Target versions [all]: " target_input
+target_input=${target_input:-all}
+
+normalize_ver() {
+  local v="$1"
+  v="${v,,}"             # lowercase
+  v="${v//php/}"         # remove php prefix if present
+  v="${v//./}"           # remove dot (8.1 -> 81, 7.4 -> 74)
+  v="${v//[^0-9]/}"      # keep digits only
+  echo "$v"
+}
+
+if [[ "${target_input,,}" == "all" ]]; then
+  # keep PHP_PATHS as detected (all)
+  :
+else
+  PHP_PATHS=()
+  declare -A seen=()
+  missing_versions=()
+
+  for token in $target_input; do
+    ver_input="$(normalize_ver "$token")"
+
+    # basic validation: expect 2 or 3 digits like 74 / 81 / 82 / 83 / 84 ...
+    if [[ -z "$ver_input" || ! "$ver_input" =~ ^[0-9]{2,3}$ ]]; then
+      echo -e "${FAIL} Invalid version token: ${RED}$token${RESET} (normalized: '${ver_input}')"
+      exit 1
+    fi
+
+    # de-duplicate
+    if [[ -n "${seen[$ver_input]+x}" ]]; then
+      continue
+    fi
+    seen[$ver_input]=1
+
+    ini="/usr/local/php${ver_input}/lib/php.ini"
+    if [ -f "$ini" ]; then
+      PHP_PATHS+=("$ini")
+    else
+      missing_versions+=("$ver_input")
+    fi
+  done
+
   if [ ${#PHP_PATHS[@]} -eq 0 ]; then
-    echo -e "${FAIL} PHP version ${RED}${ver_input}${RESET} not found!"
+    echo -e "${FAIL} No valid target php.ini files selected."
+    exit 1
+  fi
+
+  if [ ${#missing_versions[@]} -gt 0 ]; then
+    echo -e "${FAIL} These PHP version(s) were not found:${RESET} ${RED}${missing_versions[*]}${RESET}"
     exit 1
   fi
 fi
+
+echo -e "${OK} Target php.ini files:"
+for p in "${PHP_PATHS[@]}"; do
+  echo -e "  ${CYAN}$p${RESET}"
+done
+
 
 # --- Rollback function ---
 rollback() {
