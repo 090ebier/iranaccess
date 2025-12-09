@@ -36,12 +36,14 @@ echo "$SEP"
 
 # --- Mode selection ---
 echo -e "${CYAN}Select tuning mode:${RESET}"
-echo -e "  1️⃣  Auto Mode      - Detect and tune automatically"
-echo -e "  2️⃣  Profile Mode   - Choose Performance / Balanced / Secure"
-echo -e "  3️⃣  Custom Mode    - Manually enter all values"
+echo -e "  1️⃣  Auto Mode        - Detect and tune automatically"
+echo -e "  2️⃣  Profile Mode     - Choose Performance / Balanced / Secure"
+echo -e "  3️⃣  Custom Mode      - Manually enter all values"
+echo -e "  4️⃣  Backup Manager   - Restore/Delete php.ini backups"
 read -p "Enter mode number [1]: " mode_choice
 mode_choice=${mode_choice:-1}
 echo "$SEP"
+
 
 # --- Function: assign values for Auto Mode ---
 auto_mode() {
@@ -146,13 +148,134 @@ custom_mode() {
   read -p "session.gc_maxlifetime [14400]: " input; session_gc_maxlifetime=${input:-14400}
 }
 
+# --- Backup Manager helpers ---
+list_backups() {
+  # prints: php_ini|backup_file|mtime_epoch
+  while IFS= read -r -d '' b; do
+    local ini="${b%.backup-*}"
+    local mt
+    mt=$(stat -c %Y "$b" 2>/dev/null || echo 0)
+    printf "%s|%s|%s\n" "$ini" "$b" "$mt"
+  done < <(find /usr/local -path "/usr/local/php*/lib/php.ini.backup-*" -type f -print0 2>/dev/null)
+}
+
+show_backups_pretty() {
+  local data
+  data="$(list_backups | sort -t'|' -k1,1 -k3,3nr || true)"
+  if [ -z "$data" ]; then
+    echo -e "${WARN} No backups found (php.ini.backup-*) under /usr/local/php*/lib/"
+    return 1
+  fi
+
+  echo -e "${CYAN}Available backups (newest first per php.ini):${RESET}"
+  echo "$data" | awk -F'|' '
+    {
+      ini=$1; backup=$2; ts=$3;
+      cmd="date -d @" ts " +\"%F %T\"";
+      cmd | getline d; close(cmd);
+      printf " - %s\n    -> %s (%s)\n", ini, backup, d;
+    }'
+  return 0
+}
+
+normalize_ver() {
+  local v="$1"
+  v="${v,,}"
+  v="${v//php/}"
+  v="${v//./}"
+  v="${v//[^0-9]/}"
+  echo "$v"
+}
+
+backup_manager() {
+  while true; do
+    echo "$SEP"
+    echo -e "${CYAN}Backup Manager:${RESET}"
+    echo -e "  1) List backups"
+    echo -e "  2) Restore backup (latest) for ALL versions"
+    echo -e "  3) Restore backup (choose version)"
+    echo -e "  4) Delete backups for ALL versions"
+    echo -e "  5) Delete backups (choose version)"
+    echo -e "  0) Exit"
+    read -p "Select [1]: " bm
+    bm=${bm:-1}
+
+    case "$bm" in
+      1)
+        show_backups_pretty || true
+        ;;
+      2)
+        echo -e "${YELLOW}Restoring latest backup for ALL versions...${RESET}"
+        # For each php.ini, pick newest backup and restore it
+        mapfile -t inis < <(list_backups | awk -F'|' '{print $1}' | sort -u)
+        if [ ${#inis[@]} -eq 0 ]; then
+          echo -e "${WARN} No backups to restore."
+          continue
+        fi
+        for ini in "${inis[@]}"; do
+          latest=$(ls -1t "${ini}.backup-"* 2>/dev/null | head -n1 || true)
+          if [ -n "$latest" ] && [ -f "$latest" ]; then
+            cp "$latest" "$ini"
+            echo -e "${OK} Restored: ${CYAN}$ini${RESET} <- ${YELLOW}$latest${RESET}"
+          fi
+        done
+        ;;
+      3)
+        show_backups_pretty || true
+        read -p "Enter version (e.g. 81 / 8.1 / php81): " vin
+        ver="$(normalize_ver "$vin")"
+        ini="/usr/local/php${ver}/lib/php.ini"
+        if [ ! -f "$ini" ]; then
+          echo -e "${FAIL} php.ini not found for version ${RED}$vin${RESET} (expected: $ini)"
+          continue
+        fi
+        latest=$(ls -1t "${ini}.backup-"* 2>/dev/null | head -n1 || true)
+        if [ -z "$latest" ] || [ ! -f "$latest" ]; then
+          echo -e "${WARN} No backups found for: ${CYAN}$ini${RESET}"
+          continue
+        fi
+        cp "$latest" "$ini"
+        echo -e "${OK} Restored: ${CYAN}$ini${RESET} <- ${YELLOW}$latest${RESET}"
+        ;;
+      4)
+        echo -e "${YELLOW}Deleting ALL backups...${RESET}"
+        count=$(find /usr/local -path "/usr/local/php*/lib/php.ini.backup-*" -type f 2>/dev/null | wc -l || echo 0)
+        find /usr/local -path "/usr/local/php*/lib/php.ini.backup-*" -type f -delete 2>/dev/null || true
+        echo -e "${OK} Deleted backups: ${CYAN}$count${RESET}"
+        ;;
+      5)
+        show_backups_pretty || true
+        read -p "Enter version (e.g. 74 / 7.4 / php74): " vin
+        ver="$(normalize_ver "$vin")"
+        ini="/usr/local/php${ver}/lib/php.ini"
+        if [ ! -f "$ini" ]; then
+          echo -e "${FAIL} php.ini not found for version ${RED}$vin${RESET} (expected: $ini)"
+          continue
+        fi
+        count=$(ls -1 "${ini}.backup-"* 2>/dev/null | wc -l || echo 0)
+        rm -f "${ini}.backup-"* 2>/dev/null || true
+        echo -e "${OK} Deleted backups for ${CYAN}$ini${RESET}: ${CYAN}$count${RESET}"
+        ;;
+      0)
+        echo -e "${CYAN}Exiting Backup Manager.${RESET}"
+        return 0
+        ;;
+      *)
+        echo -e "${WARN} Invalid option."
+        ;;
+    esac
+  done
+}
+
 # --- Run selected mode ---
 case $mode_choice in
   1) auto_mode ;;
   2) profile_mode ;;
   3) custom_mode ;;
+  4) backup_manager; exit 0 ;;
   *) auto_mode ;;
 esac
+
 
 echo "$SEP"
 
