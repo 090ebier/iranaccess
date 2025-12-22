@@ -269,34 +269,55 @@ check_directory() {
     local current_dir=$(pwd)
     
     if [[ ! "$current_dir" =~ public_html$ ]]; then
-        print_message "$RED" "❌ Error: You must run this script from a public_html directory!"
-        print_message "$YELLOW" "Expected paths:"
+        print_message "$YELLOW" "⚠️  WARNING: You are not in a public_html directory!"
+        print_message "$CYAN" "Current path: $current_dir"
+        print_message "$CYAN" "Expected paths:"
         print_message "$CYAN" "  - /home/username/public_html"
         print_message "$CYAN" "  - /home/username/domains/example.com/public_html"
-        print_message "$YELLOW" ""
-        print_message "$YELLOW" "Current path: $current_dir"
-        cleanup_wpcli
-        exit 1
+        echo ""
+        echo -ne "${YELLOW}Do you want to continue anyway? (y/n): ${NC}"
+        read confirm
+        
+        if [ "$confirm" != "y" ]; then
+            print_message "$RED" "Operation cancelled"
+            cleanup_wpcli
+            exit 1
+        fi
+        
+        print_message "$GREEN" "✓ Continuing in current directory..."
     fi
     
     # Extract username
     SYSTEM_USER=$(extract_username)
     
     if [ -z "$SYSTEM_USER" ]; then
-        print_message "$RED" "❌ Error: Could not extract username from path!"
-        print_message "$YELLOW" "Current path: $current_dir"
-        cleanup_wpcli
-        exit 1
+        print_message "$YELLOW" "⚠️  Could not extract username from path"
+        print_message "$CYAN" "Current path: $current_dir"
+        echo ""
+        echo -ne "${YELLOW}Enter username manually (or press Enter to skip ownership fix): ${NC}"
+        read manual_user
+        
+        if [ -n "$manual_user" ]; then
+            if id "$manual_user" &>/dev/null; then
+                SYSTEM_USER="$manual_user"
+                print_message "$GREEN" "✓ Using user: $SYSTEM_USER"
+            else
+                print_message "$RED" "❌ User '$manual_user' does not exist!"
+                print_message "$YELLOW" "⚠️  Ownership will not be changed"
+            fi
+        else
+            print_message "$YELLOW" "⚠️  Skipping ownership fix"
+        fi
+    else
+        # Verify user exists
+        if ! id "$SYSTEM_USER" &>/dev/null; then
+            print_message "$RED" "❌ Warning: User '$SYSTEM_USER' does not exist on this system!"
+            print_message "$YELLOW" "⚠️  Ownership will not be changed"
+            SYSTEM_USER=""
+        else
+            print_message "$GREEN" "✓ Detected user: $SYSTEM_USER"
+        fi
     fi
-    
-    # Verify user exists
-    if ! id "$SYSTEM_USER" &>/dev/null; then
-        print_message "$RED" "❌ Error: User '$SYSTEM_USER' does not exist on this system!"
-        cleanup_wpcli
-        exit 1
-    fi
-    
-    print_message "$GREEN" "✓ Detected user: $SYSTEM_USER"
 }
 
 # Function to fix permissions
@@ -335,13 +356,29 @@ fix_permissions() {
 # Function to run WP-CLI command
 run_wpcli() {
     local cmd="$@"
-    print_message "$CYAN" "🚀 Executing: wp $cmd"
+    local fix_perms="${FIX_PERMISSIONS:-false}"
+    local use_force="${USE_FORCE:-false}"
+    
+    # Remove --allow-root if user already added it
+    cmd="${cmd// --allow-root/}"
+    
+    # Add --force for specific operations if flag is set
+    if [ "$use_force" = "true" ] && [[ ! "$cmd" =~ --force ]]; then
+        cmd="$cmd --force"
+    fi
+    
+    print_message "$CYAN" "🚀 Executing: wp $cmd --allow-root"
     echo ""
     
     if $PHP_BIN "$WPCLI_PATH" $cmd --allow-root; then
         echo ""
         print_message "$GREEN" "✓ Command executed successfully"
-        fix_permissions
+        
+        # Only fix permissions if flag is set
+        if [ "$fix_perms" = "true" ]; then
+            fix_permissions
+        fi
+        return 0
     else
         echo ""
         print_message "$RED" "❌ Command failed"
@@ -362,15 +399,52 @@ show_menu() {
     echo -e "${YELLOW}┌─────────────────────────────────────────────────────────┐${NC}"
     echo -e "${YELLOW}│${NC}  ${WHITE}${BOLD}Main Menu${NC}                                               ${YELLOW}│${NC}"
     echo -e "${YELLOW}├─────────────────────────────────────────────────────────┤${NC}"
+    echo -e "${YELLOW}│${NC}  ${CYAN}${BOLD}WordPress Core${NC}                                          ${YELLOW}│${NC}"
     echo -e "${YELLOW}│${NC}  ${GREEN}[1]${NC}  Download WordPress Core                           ${YELLOW}│${NC}"
-    echo -e "${YELLOW}│${NC}  ${GREEN}[2]${NC}  Search & Replace                                  ${YELLOW}│${NC}"
-    echo -e "${YELLOW}│${NC}  ${GREEN}[3]${NC}  Database Backup                                   ${YELLOW}│${NC}"
-    echo -e "${YELLOW}│${NC}  ${GREEN}[4]${NC}  Update WordPress                                  ${YELLOW}│${NC}"
-    echo -e "${YELLOW}│${NC}  ${GREEN}[5]${NC}  Update Plugins                                    ${YELLOW}│${NC}"
-    echo -e "${YELLOW}│${NC}  ${GREEN}[6]${NC}  Update Themes                                     ${YELLOW}│${NC}"
-    echo -e "${YELLOW}│${NC}  ${GREEN}[7]${NC}  Fix Permissions                                   ${YELLOW}│${NC}"
-    echo -e "${YELLOW}│${NC}  ${GREEN}[8]${NC}  Change PHP Version                                ${YELLOW}│${NC}"
-    echo -e "${YELLOW}│${NC}  ${GREEN}[9]${NC}  Run Custom Command                                ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[2]${NC}  Update WordPress Core                             ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[3]${NC}  Check Core Version                                ${YELLOW}│${NC}"
+    echo -e "${YELLOW}├─────────────────────────────────────────────────────────┤${NC}"
+    echo -e "${YELLOW}│${NC}  ${CYAN}${BOLD}Database Management${NC}                                     ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[4]${NC}  Database Backup (Export)                          ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[5]${NC}  Database Restore (Import)                         ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[6]${NC}  Search & Replace in Database                      ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[7]${NC}  Optimize Database                                 ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[8]${NC}  Database Size & Info                              ${YELLOW}│${NC}"
+    echo -e "${YELLOW}├─────────────────────────────────────────────────────────┤${NC}"
+    echo -e "${YELLOW}│${NC}  ${CYAN}${BOLD}Plugins Management${NC}                                      ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[9]${NC}  List All Plugins                                  ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[10]${NC} Update All Plugins                                ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[11]${NC} Install Plugin                                    ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[12]${NC} Activate/Deactivate Plugin                        ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[13]${NC} Delete Plugin                                     ${YELLOW}│${NC}"
+    echo -e "${YELLOW}├─────────────────────────────────────────────────────────┤${NC}"
+    echo -e "${YELLOW}│${NC}  ${CYAN}${BOLD}Themes Management${NC}                                       ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[14]${NC} List All Themes                                   ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[15]${NC} Update All Themes                                 ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[16]${NC} Install Theme                                     ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[17]${NC} Activate Theme                                    ${YELLOW}│${NC}"
+    echo -e "${YELLOW}├─────────────────────────────────────────────────────────┤${NC}"
+    echo -e "${YELLOW}│${NC}  ${CYAN}${BOLD}User Management${NC}                                         ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[18]${NC} List All Users                                    ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[19]${NC} Create New User                                   ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[20]${NC} Change User Password                              ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[21]${NC} Delete User                                       ${YELLOW}│${NC}"
+    echo -e "${YELLOW}├─────────────────────────────────────────────────────────┤${NC}"
+    echo -e "${YELLOW}│${NC}  ${CYAN}${BOLD}Cache & Performance${NC}                                     ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[22]${NC} Flush All Cache                                   ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[23]${NC} Regenerate Thumbnails                             ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[24]${NC} Clear Transients                                  ${YELLOW}│${NC}"
+    echo -e "${YELLOW}├─────────────────────────────────────────────────────────┤${NC}"
+    echo -e "${YELLOW}│${NC}  ${CYAN}${BOLD}Maintenance & Security${NC}                                  ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[25]${NC} Enable/Disable Maintenance Mode                   ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[26]${NC} Fix Permissions & Ownership                       ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[27]${NC} Verify Core Checksums                             ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[28]${NC} Reset Admin Password                              ${YELLOW}│${NC}"
+    echo -e "${YELLOW}├─────────────────────────────────────────────────────────┤${NC}"
+    echo -e "${YELLOW}│${NC}  ${CYAN}${BOLD}System & Tools${NC}                                          ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[29]${NC} Site Info & System Status                         ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[30]${NC} Change PHP Version                                ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}[31]${NC} Run Custom WP-CLI Command                         ${YELLOW}│${NC}"
     echo -e "${YELLOW}│${NC}  ${RED}[0]${NC}  Exit                                              ${YELLOW}│${NC}"
     echo -e "${YELLOW}└─────────────────────────────────────────────────────────┘${NC}"
     echo ""
@@ -391,15 +465,9 @@ download_core() {
     read locale
     locale=${locale:-fa_IR}
     
-    echo -ne "${YELLOW}Force download? (y/n): ${NC}"
-    read force
-    
     local cmd="core download --version=$version --locale=$locale"
-    if [ "$force" = "y" ]; then
-        cmd="$cmd --force"
-    fi
     
-    run_wpcli $cmd
+    FIX_PERMISSIONS=true USE_FORCE=true run_wpcli $cmd
     
     echo ""
     echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
@@ -458,7 +526,7 @@ update_core() {
     print_message "$MAGENTA" "🔄 Update WordPress"
     echo ""
     
-    run_wpcli core update
+    FIX_PERMISSIONS=true USE_FORCE=true run_wpcli core update
     
     echo ""
     echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
@@ -471,7 +539,7 @@ update_plugins() {
     print_message "$MAGENTA" "🔌 Update Plugins"
     echo ""
     
-    run_wpcli plugin update --all
+    FIX_PERMISSIONS=true USE_FORCE=true run_wpcli plugin update --all
     
     echo ""
     echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
@@ -484,14 +552,491 @@ update_themes() {
     print_message "$MAGENTA" "🎨 Update Themes"
     echo ""
     
-    run_wpcli theme update --all
+    FIX_PERMISSIONS=true USE_FORCE=true run_wpcli theme update --all
     
     echo ""
     echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
     read
 }
 
-# Function to run custom command
+# Function to check core version
+check_core_version() {
+    print_header
+    print_message "$MAGENTA" "📋 WordPress Core Version"
+    echo ""
+    
+    run_wpcli core version --extra
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to restore database
+restore_database() {
+    print_header
+    print_message "$MAGENTA" "📥 Database Restore (Import)"
+    echo ""
+    
+    print_message "$YELLOW" "Available SQL files in current directory:"
+    ls -lh *.sql 2>/dev/null || print_message "$RED" "No SQL files found!"
+    echo ""
+    
+    echo -ne "${YELLOW}SQL filename to import: ${NC}"
+    read sql_file
+    
+    if [ ! -f "$sql_file" ]; then
+        print_message "$RED" "❌ File not found: $sql_file"
+    else
+        print_message "$RED" "⚠️  WARNING: This will overwrite your current database!"
+        echo -ne "${YELLOW}Are you sure? (yes/no): ${NC}"
+        read confirm
+        
+        if [ "$confirm" = "yes" ]; then
+            run_wpcli db import "$sql_file"
+        else
+            print_message "$YELLOW" "Import cancelled"
+        fi
+    fi
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to optimize database
+optimize_database() {
+    print_header
+    print_message "$MAGENTA" "⚡ Optimize Database"
+    echo ""
+    
+    run_wpcli db optimize
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to show database info
+database_info() {
+    print_header
+    print_message "$MAGENTA" "📊 Database Size & Info"
+    echo ""
+    
+    run_wpcli db size --tables
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to list plugins
+list_plugins() {
+    print_header
+    print_message "$MAGENTA" "🔌 All Plugins"
+    echo ""
+    
+    run_wpcli plugin list
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to install plugin
+install_plugin() {
+    print_header
+    print_message "$MAGENTA" "⬇️  Install Plugin"
+    echo ""
+    
+    echo -ne "${YELLOW}Plugin slug (e.g., contact-form-7): ${NC}"
+    read plugin_slug
+    
+    if [ -z "$plugin_slug" ]; then
+        print_message "$RED" "❌ Plugin slug cannot be empty!"
+    else
+        echo -ne "${YELLOW}Activate after install? (y/n): ${NC}"
+        read activate
+        
+        local cmd="plugin install $plugin_slug"
+        if [ "$activate" = "y" ]; then
+            cmd="$cmd --activate"
+        fi
+        
+        FIX_PERMISSIONS=true USE_FORCE=true run_wpcli $cmd
+    fi
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to activate/deactivate plugin
+toggle_plugin() {
+    print_header
+    print_message "$MAGENTA" "🔄 Activate/Deactivate Plugin"
+    echo ""
+    
+    run_wpcli plugin list
+    echo ""
+    
+    echo -ne "${YELLOW}Plugin slug: ${NC}"
+    read plugin_slug
+    
+    echo -ne "${YELLOW}Action (activate/deactivate): ${NC}"
+    read action
+    
+    if [ -z "$plugin_slug" ] || [ -z "$action" ]; then
+        print_message "$RED" "❌ Plugin slug and action are required!"
+    else
+        run_wpcli plugin $action $plugin_slug
+    fi
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to delete plugin
+delete_plugin() {
+    print_header
+    print_message "$MAGENTA" "🗑️  Delete Plugin"
+    echo ""
+    
+    run_wpcli plugin list
+    echo ""
+    
+    echo -ne "${YELLOW}Plugin slug to delete: ${NC}"
+    read plugin_slug
+    
+    if [ -z "$plugin_slug" ]; then
+        print_message "$RED" "❌ Plugin slug cannot be empty!"
+    else
+        print_message "$RED" "⚠️  WARNING: This will permanently delete the plugin!"
+        echo -ne "${YELLOW}Are you sure? (yes/no): ${NC}"
+        read confirm
+        
+        if [ "$confirm" = "yes" ]; then
+            FIX_PERMISSIONS=true run_wpcli plugin delete $plugin_slug
+        else
+            print_message "$YELLOW" "Deletion cancelled"
+        fi
+    fi
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to list themes
+list_themes() {
+    print_header
+    print_message "$MAGENTA" "🎨 All Themes"
+    echo ""
+    
+    run_wpcli theme list
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to install theme
+install_theme() {
+    print_header
+    print_message "$MAGENTA" "⬇️  Install Theme"
+    echo ""
+    
+    echo -ne "${YELLOW}Theme slug (e.g., twentytwentyfour): ${NC}"
+    read theme_slug
+    
+    if [ -z "$theme_slug" ]; then
+        print_message "$RED" "❌ Theme slug cannot be empty!"
+    else
+        echo -ne "${YELLOW}Activate after install? (y/n): ${NC}"
+        read activate
+        
+        local cmd="theme install $theme_slug"
+        if [ "$activate" = "y" ]; then
+            cmd="$cmd --activate"
+        fi
+        
+        FIX_PERMISSIONS=true USE_FORCE=true run_wpcli $cmd
+    fi
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to activate theme
+activate_theme() {
+    print_header
+    print_message "$MAGENTA" "✨ Activate Theme"
+    echo ""
+    
+    run_wpcli theme list
+    echo ""
+    
+    echo -ne "${YELLOW}Theme slug to activate: ${NC}"
+    read theme_slug
+    
+    if [ -z "$theme_slug" ]; then
+        print_message "$RED" "❌ Theme slug cannot be empty!"
+    else
+        run_wpcli theme activate $theme_slug
+    fi
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to list users
+list_users() {
+    print_header
+    print_message "$MAGENTA" "👥 All Users"
+    echo ""
+    
+    run_wpcli user list
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to create user
+create_user() {
+    print_header
+    print_message "$MAGENTA" "➕ Create New User"
+    echo ""
+    
+    echo -ne "${YELLOW}Username: ${NC}"
+    read username
+    
+    echo -ne "${YELLOW}Email: ${NC}"
+    read email
+    
+    echo -ne "${YELLOW}Role (administrator/editor/author/contributor/subscriber): ${NC}"
+    read role
+    role=${role:-subscriber}
+    
+    if [ -z "$username" ] || [ -z "$email" ]; then
+        print_message "$RED" "❌ Username and email are required!"
+    else
+        run_wpcli user create "$username" "$email" --role="$role"
+    fi
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to change user password
+change_user_password() {
+    print_header
+    print_message "$MAGENTA" "🔐 Change User Password"
+    echo ""
+    
+    run_wpcli user list
+    echo ""
+    
+    echo -ne "${YELLOW}Username or User ID: ${NC}"
+    read user_id
+    
+    echo -ne "${YELLOW}New password (leave empty to generate): ${NC}"
+    read -s new_password
+    echo ""
+    
+    if [ -z "$user_id" ]; then
+        print_message "$RED" "❌ User ID/username is required!"
+    else
+        if [ -z "$new_password" ]; then
+            run_wpcli user update "$user_id" --prompt=user_pass
+        else
+            run_wpcli user update "$user_id" --user_pass="$new_password"
+        fi
+    fi
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to delete user
+delete_user() {
+    print_header
+    print_message "$MAGENTA" "🗑️  Delete User"
+    echo ""
+    
+    run_wpcli user list
+    echo ""
+    
+    echo -ne "${YELLOW}Username or User ID to delete: ${NC}"
+    read user_id
+    
+    if [ -z "$user_id" ]; then
+        print_message "$RED" "❌ User ID/username is required!"
+    else
+        print_message "$RED" "⚠️  WARNING: This will permanently delete the user!"
+        echo -ne "${YELLOW}Reassign posts to user ID (or leave empty): ${NC}"
+        read reassign_id
+        
+        echo -ne "${YELLOW}Confirm deletion? (yes/no): ${NC}"
+        read confirm
+        
+        if [ "$confirm" = "yes" ]; then
+            if [ -n "$reassign_id" ]; then
+                run_wpcli user delete "$user_id" --reassign="$reassign_id"
+            else
+                run_wpcli user delete "$user_id" --yes
+            fi
+        else
+            print_message "$YELLOW" "Deletion cancelled"
+        fi
+    fi
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to flush cache
+flush_cache() {
+    print_header
+    print_message "$MAGENTA" "🧹 Flush All Cache"
+    echo ""
+    
+    print_message "$CYAN" "Flushing object cache..."
+    run_wpcli cache flush
+    
+    echo ""
+    print_message "$CYAN" "Flushing rewrite rules..."
+    run_wpcli rewrite flush
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to regenerate thumbnails
+regenerate_thumbnails() {
+    print_header
+    print_message "$MAGENTA" "🖼️  Regenerate Thumbnails"
+    echo ""
+    
+    print_message "$YELLOW" "This may take a while for sites with many images..."
+    echo -ne "${YELLOW}Continue? (y/n): ${NC}"
+    read confirm
+    
+    if [ "$confirm" = "y" ]; then
+        FIX_PERMISSIONS=true run_wpcli media regenerate --yes
+    else
+        print_message "$YELLOW" "Operation cancelled"
+    fi
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to clear transients
+clear_transients() {
+    print_header
+    print_message "$MAGENTA" "🗑️  Clear Transients"
+    echo ""
+    
+    run_wpcli transient delete --all
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to toggle maintenance mode
+toggle_maintenance() {
+    print_header
+    print_message "$MAGENTA" "🔧 Maintenance Mode"
+    echo ""
+    
+    echo -ne "${YELLOW}Action (activate/deactivate): ${NC}"
+    read action
+    
+    if [ "$action" = "activate" ]; then
+        run_wpcli maintenance-mode activate
+    elif [ "$action" = "deactivate" ]; then
+        run_wpcli maintenance-mode deactivate
+    else
+        print_message "$RED" "❌ Invalid action!"
+    fi
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to verify core checksums
+verify_checksums() {
+    print_header
+    print_message "$MAGENTA" "🔍 Verify Core Checksums"
+    echo ""
+    
+    run_wpcli core verify-checksums
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to reset admin password
+reset_admin_password() {
+    print_header
+    print_message "$MAGENTA" "🔐 Reset Admin Password"
+    echo ""
+    
+    run_wpcli user list --role=administrator
+    echo ""
+    
+    echo -ne "${YELLOW}Admin username: ${NC}"
+    read admin_user
+    
+    if [ -z "$admin_user" ]; then
+        print_message "$RED" "❌ Admin username is required!"
+    else
+        run_wpcli user update "$admin_user" --prompt=user_pass
+    fi
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
+
+# Function to show site info
+site_info() {
+    print_header
+    print_message "$MAGENTA" "ℹ️  Site Info & System Status"
+    echo ""
+    
+    print_message "$CYAN" "WordPress Information:"
+    run_wpcli core version --extra
+    
+    echo ""
+    print_message "$CYAN" "Site Options:"
+    run_wpcli option get siteurl
+    run_wpcli option get home
+    
+    echo ""
+    print_message "$CYAN" "Active Theme:"
+    run_wpcli theme list --status=active
+    
+    echo ""
+    print_message "$CYAN" "Active Plugins Count:"
+    run_wpcli plugin list --status=active --field=name | wc -l
+    
+    echo ""
+    echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
+    read
+}
 custom_command() {
     print_header
     print_message "$MAGENTA" "⚡ Run Custom Command"
@@ -564,20 +1109,42 @@ main() {
         
         case $choice in
             1) download_core ;;
-            2) search_replace ;;
-            3) backup_database ;;
-            4) update_core ;;
-            5) update_plugins ;;
-            6) update_themes ;;
-            7) 
+            2) update_core ;;
+            3) check_core_version ;;
+            4) backup_database ;;
+            5) restore_database ;;
+            6) search_replace ;;
+            7) optimize_database ;;
+            8) database_info ;;
+            9) list_plugins ;;
+            10) update_plugins ;;
+            11) install_plugin ;;
+            12) toggle_plugin ;;
+            13) delete_plugin ;;
+            14) list_themes ;;
+            15) update_themes ;;
+            16) install_theme ;;
+            17) activate_theme ;;
+            18) list_users ;;
+            19) create_user ;;
+            20) change_user_password ;;
+            21) delete_user ;;
+            22) flush_cache ;;
+            23) regenerate_thumbnails ;;
+            24) clear_transients ;;
+            25) toggle_maintenance ;;
+            26) 
                 print_header
                 fix_permissions
                 echo ""
                 echo -ne "${YELLOW}Press Enter to return to main menu...${NC}"
                 read
                 ;;
-            8) select_php_version_interactive ;;
-            9) custom_command ;;
+            27) verify_checksums ;;
+            28) reset_admin_password ;;
+            29) site_info ;;
+            30) select_php_version_interactive ;;
+            31) custom_command ;;
             0) 
                 print_message "$GREEN" "👋 Goodbye!"
                 cleanup_wpcli
