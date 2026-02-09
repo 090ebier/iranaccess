@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Enhanced GRE Tunnel Configuration Script for Iran/Kharej Servers
-# Version: 5.0 - Multi-Role Support (Kharej can be both receiver and forwarder)
+# Version: 5.1 - Fixed Manual Tunnel Number Selection
 
 set -e
 
@@ -60,6 +60,41 @@ validate_ports() {
         fi
     done
     return 0
+}
+
+# Check if tunnel number already exists
+check_tunnel_exists() {
+    local tunnel_type=$1  # "iran" or "kharej"
+    local tunnel_num=$2
+    local config_file="$CONFIG_DIR/tunnel-${tunnel_type}-${tunnel_num}.conf"
+    
+    if [[ -f "$config_file" ]]; then
+        return 0  # exists
+    else
+        return 1  # doesn't exist
+    fi
+}
+
+# List existing tunnels of a type
+list_existing_tunnels() {
+    local tunnel_type=$1  # "iran" or "kharej"
+    local prefix="tunnel-${tunnel_type}-"
+    local found=0
+    
+    echo -e "${YELLOW}Existing ${tunnel_type} tunnels:${NC}"
+    for file in "$CONFIG_DIR"/${prefix}*.conf; do
+        if [[ -f "$file" ]]; then
+            found=1
+            num=$(basename "$file" | sed "s/${prefix}\([0-9]*\).conf/\1/")
+            source "$file"
+            echo -e "  • ${tunnel_type}-${num}: ${CYAN}$([ -n "$IRAN_IP" ] && echo "$IRAN_IP" || echo "$KHAREJ1_IP") → $([ -n "$KHAREJ_IP" ] && echo "$KHAREJ_IP" || echo "$KHAREJ2_IP")${NC}"
+        fi
+    done
+    
+    if [[ $found -eq 0 ]]; then
+        echo -e "  ${YELLOW}(No ${tunnel_type} tunnels configured yet)${NC}"
+    fi
+    echo ""
 }
 
 # Get next available tunnel number for specific type
@@ -250,6 +285,14 @@ EOF
     else
         echo -e "${YELLOW}⚠ Tunnel created but ping test failed. Check Kharej server.${NC}"
     fi
+    
+    echo -e "\n${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}⚠  IMPORTANT NEXT STEP:${NC}"
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}Now configure Kharej server with:${NC}"
+    echo -e "  • Menu option: ${BLUE}3${NC}"
+    echo -e "  • Tunnel number: ${BLUE}$tunnel_num${NC}"
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
 # Configure Iran Server (Multiple Kharej)
@@ -480,7 +523,7 @@ EOF
     echo -e "${YELLOW}⚠  IMPORTANT NEXT STEP:${NC}"
     echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${GREEN}Now configure Kharej2 server with:${NC}"
-    echo -e "  • Menu option: ${BLUE}5${NC}"
+    echo -e "  • Menu option: ${BLUE}6${NC}"
     echo -e "  • Tunnel number: ${BLUE}$tunnel_num${NC}"
     echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
@@ -773,8 +816,8 @@ main_menu() {
     while true; do
         clear
         echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
-        echo -e "${GREEN}║   GRE Tunnel Manager v5.0              ║${NC}"
-        echo -e "${GREEN}║   Multi-Role & Load Balancing Support  ║${NC}"
+        echo -e "${GREEN}║   GRE Tunnel Manager v5.1              ║${NC}"
+        echo -e "${GREEN}║   Manual Tunnel Number Selection       ║${NC}"
         echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
         echo ""
         echo -e "${BLUE}Iran Server Options:${NC}"
@@ -809,6 +852,10 @@ main_menu() {
         case "$choice" in
             1)
                 echo -e "\n${YELLOW}Configuring Iran Server (Single Tunnel)...${NC}\n"
+                
+                # Show existing tunnels
+                list_existing_tunnels "iran"
+                
                 read -p "Enter Iran Server Public IPv4: " iran
                 validate_ipv4 "$iran" || { read -p "Press Enter to continue..."; continue; }
                 
@@ -819,7 +866,27 @@ main_menu() {
                 read -p "Ports: " ports
                 validate_ports "$ports" || { read -p "Press Enter to continue..."; continue; }
                 
-                tunnel_num=$(get_next_tunnel_number "iran")
+                # Ask for tunnel number
+                local suggested=$(get_next_tunnel_number "iran")
+                echo -e "\n${YELLOW}Enter tunnel number for iran-X (suggested: $suggested)${NC}"
+                read -p "Tunnel number: " tunnel_num
+                
+                if [[ ! $tunnel_num =~ ^[0-9]+$ ]]; then
+                    echo -e "${RED}Invalid tunnel number${NC}"
+                    read -p "Press Enter to continue..."
+                    continue
+                fi
+                
+                # Check if exists
+                if check_tunnel_exists "iran" "$tunnel_num"; then
+                    echo -e "${RED}Tunnel iran-$tunnel_num already exists!${NC}"
+                    read -p "Overwrite? (yes/no): " overwrite
+                    if [[ "$overwrite" != "yes" ]]; then
+                        read -p "Press Enter to continue..."
+                        continue
+                    fi
+                fi
+                
                 configure_iran_single "$iran" "$kharej" "$ports" "$tunnel_num"
                 read -p "Press Enter to continue..."
                 ;;
@@ -833,6 +900,10 @@ main_menu() {
                 ;;
             3)
                 echo -e "\n${YELLOW}Configuring Kharej Server (receiving from Iran)...${NC}\n"
+                
+                # Show existing tunnels
+                list_existing_tunnels "iran"
+                
                 read -p "Enter Kharej Server Public IPv4: " kharej
                 validate_ipv4 "$kharej" || { read -p "Press Enter to continue..."; continue; }
                 
@@ -855,6 +926,9 @@ main_menu() {
                 echo -e "\n${YELLOW}Configuring Kharej Forward (Single Destination)...${NC}\n"
                 echo -e "${CYAN}This Kharej will forward traffic to another Kharej${NC}\n"
                 
+                # Show existing tunnels
+                list_existing_tunnels "kharej"
+                
                 read -p "Enter This Kharej Server Public IPv4: " kharej1
                 validate_ipv4 "$kharej1" || { read -p "Press Enter to continue..."; continue; }
                 
@@ -866,7 +940,27 @@ main_menu() {
                 read -p "Ports: " ports
                 validate_ports "$ports" || { read -p "Press Enter to continue..."; continue; }
                 
-                tunnel_num=$(get_next_tunnel_number "kharej")
+                # Ask for tunnel number
+                local suggested=$(get_next_tunnel_number "kharej")
+                echo -e "\n${YELLOW}Enter tunnel number for kharej-X (suggested: $suggested)${NC}"
+                read -p "Tunnel number: " tunnel_num
+                
+                if [[ ! $tunnel_num =~ ^[0-9]+$ ]]; then
+                    echo -e "${RED}Invalid tunnel number${NC}"
+                    read -p "Press Enter to continue..."
+                    continue
+                fi
+                
+                # Check if exists
+                if check_tunnel_exists "kharej" "$tunnel_num"; then
+                    echo -e "${RED}Tunnel kharej-$tunnel_num already exists!${NC}"
+                    read -p "Overwrite? (yes/no): " overwrite
+                    if [[ "$overwrite" != "yes" ]]; then
+                        read -p "Press Enter to continue..."
+                        continue
+                    fi
+                fi
+                
                 configure_kharej_to_kharej_source "$kharej1" "$kharej2" "$ports" "$tunnel_num"
                 read -p "Press Enter to continue..."
                 ;;
@@ -883,6 +977,9 @@ main_menu() {
             6)
                 echo -e "\n${YELLOW}Configuring Destination Kharej...${NC}\n"
                 echo -e "${CYAN}This Kharej receives traffic from another Kharej${NC}\n"
+                
+                # Show existing tunnels
+                list_existing_tunnels "kharej"
                 
                 read -p "Enter This Kharej Server Public IPv4 (destination): " kharej2
                 validate_ipv4 "$kharej2" || { read -p "Press Enter to continue..."; continue; }
