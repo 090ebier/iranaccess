@@ -241,6 +241,8 @@ transport.tcpMux = false
 EOF
 
     # Append one proxy block per port
+    # IMPORTANT: loadBalancer must use inline dot-notation (loadBalancer.group = ...)
+    # NOT [proxies.loadBalancer] section header — that breaks multi-proxy TOML parsing
     for port in "${port_list[@]}"; do
         cat >> "$cfg_file" <<EOF
 [[proxies]]
@@ -249,10 +251,8 @@ type = "tcp"
 localIP = "127.0.0.1"
 localPort = ${port}
 remotePort = ${port}
-
-[proxies.loadBalancer]
-group = "${lb_group}"
-groupKey = "${lb_key}"
+loadBalancer.group = "${lb_group}"
+loadBalancer.groupKey = "${lb_key}"
 
 EOF
     done
