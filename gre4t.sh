@@ -144,29 +144,32 @@ get_next_tunnel_ip() {
 # Ask for MSS clamping configuration
 ask_mss_clamping() {
     local tunnel_name=$1
+    local mss_result
     
-    echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${CYAN}TCP MSS Clamping Configuration${NC}"
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${YELLOW}MSS clamping helps prevent fragmentation issues in GRE tunnels${NC}"
-    echo -e "${YELLOW}Recommended for better performance and stability${NC}"
-    echo ""
+    echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+    echo -e "${CYAN}TCP MSS Clamping Configuration${NC}" >&2
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+    echo -e "${YELLOW}MSS clamping helps prevent fragmentation issues in GRE tunnels${NC}" >&2
+    echo -e "${YELLOW}Recommended for better performance and stability${NC}" >&2
+    echo "" >&2
     
     read -p "Enable MSS clamping for this tunnel? (yes/no) [yes]: " enable_mss
     enable_mss=${enable_mss:-yes}
     
     if [[ "$enable_mss" == "yes" || "$enable_mss" == "y" ]]; then
-        read -p "Enter MSS value (recommended: 1360) [1360]: " mss_value
-        mss_value=${mss_value:-1360}
+        read -p "Enter MSS value (recommended: 1360) [1360]: " mss_result
+        mss_result=${mss_result:-1360}
         
-        if [[ ! $mss_value =~ ^[0-9]+$ ]] || [[ $mss_value -lt 500 || $mss_value -gt 1460 ]]; then
-            echo -e "${YELLOW}Invalid MSS value. Using default: 1360${NC}"
-            mss_value=1360
+        if [[ ! $mss_result =~ ^[0-9]+$ ]] || [[ $mss_result -lt 500 || $mss_result -gt 1460 ]]; then
+            echo -e "${YELLOW}Invalid MSS value. Using default: 1360${NC}" >&2
+            mss_result=1360
         fi
         
-        echo "$mss_value"
+        # Return clean number without any formatting - only to stdout
+        echo "$mss_result"
         return 0
     else
+        # Return 0 to disable MSS
         echo "0"
         return 1
     fi
