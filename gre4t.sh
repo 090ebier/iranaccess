@@ -233,6 +233,16 @@ create_systemd_service() {
     local tunnel_id=$1
     local service_file="$SERVICE_DIR/gre-tunnel-${tunnel_id}.service"
     
+    # Create RP filter fix script
+    cat > "/usr/local/bin/gre-tunnel-${tunnel_id}-rp-fix.sh" << EOF
+#!/bin/bash
+# Wait a moment for interface to be fully ready
+sleep 0.5
+# Disable RP filter using sysctl
+sysctl -w net.ipv4.conf.GRE-${tunnel_id}.rp_filter=0 > /dev/null 2>&1
+EOF
+    chmod +x "/usr/local/bin/gre-tunnel-${tunnel_id}-rp-fix.sh"
+    
     cat > "$service_file" << EOF
 [Unit]
 Description=GRE Tunnel Service $tunnel_id
@@ -243,6 +253,7 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh
+ExecStartPost=/usr/local/bin/gre-tunnel-${tunnel_id}-rp-fix.sh
 ExecStop=/usr/local/bin/gre-tunnel-${tunnel_id}-down.sh
 StandardOutput=journal
 StandardError=journal
@@ -288,50 +299,50 @@ MSS_VALUE=$mss_value
 EOF
 
     # Create startup script
-    cat > "/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh" << EOF
+    cat > "/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh" << 'EOFSCRIPT'
 #!/bin/bash
-source $CONFIG_DIR/tunnel-${tunnel_id}.conf
+source /etc/gre-tunnels/tunnel-iran-TUNNELNUM.conf
 
 # Enable IP forwarding
 sysctl -w net.ipv4.ip_forward=1 > /dev/null
 sysctl -w net.ipv4.conf.all.forwarding=1 > /dev/null
 
 # Create GRE tunnel
-ip tunnel add \$TUNNEL_NAME mode gre remote \$KHAREJ_IP local \$IRAN_IP ttl 64
-ip addr add \$TUNNEL_IP_IRAN/30 dev \$TUNNEL_NAME
-ip link set \$TUNNEL_NAME mtu 1420
-ip link set \$TUNNEL_NAME up
+ip tunnel add $TUNNEL_NAME mode gre remote $KHAREJ_IP local $IRAN_IP ttl 64
+ip addr add $TUNNEL_IP_IRAN/30 dev $TUNNEL_NAME
+ip link set $TUNNEL_NAME mtu 1420
+ip link set $TUNNEL_NAME up
 
-# Wait for interface to be fully up
-sleep 1
-
-# Disable RP filter for tunnel interface
-if [[ -d "/proc/sys/net/ipv4/conf/\$TUNNEL_NAME" ]]; then
-    echo 0 > "/proc/sys/net/ipv4/conf/\$TUNNEL_NAME/rp_filter"
-fi
+# Disable RP filter for tunnel interface using sysctl (more reliable)
+sysctl -w net.ipv4.conf.$TUNNEL_NAME.rp_filter=0 > /dev/null 2>&1
 
 # Add route for tunnel network
-ip route add $tunnel_ip.0/30 dev \$TUNNEL_NAME 2>/dev/null || true
+ip route add TUNNELSUBNET.0/30 dev $TUNNEL_NAME 2>/dev/null || true
 
 # Configure iptables - DNAT selected ports to Kharej
-iptables -t nat -A PREROUTING -p tcp -m multiport --dports \$PORTS -j DNAT --to-destination \$TUNNEL_IP_KHAREJ
-iptables -t nat -A PREROUTING -p udp -m multiport --dports \$PORTS -j DNAT --to-destination \$TUNNEL_IP_KHAREJ
+iptables -t nat -A PREROUTING -p tcp -m multiport --dports $PORTS -j DNAT --to-destination $TUNNEL_IP_KHAREJ
+iptables -t nat -A PREROUTING -p udp -m multiport --dports $PORTS -j DNAT --to-destination $TUNNEL_IP_KHAREJ
 
 # Masquerade traffic going through GRE
-iptables -t nat -A POSTROUTING -o \$TUNNEL_NAME -j MASQUERADE
+iptables -t nat -A POSTROUTING -o $TUNNEL_NAME -j MASQUERADE
 
 # Allow forwarding
-iptables -A FORWARD -i \$TUNNEL_NAME -j ACCEPT
-iptables -A FORWARD -o \$TUNNEL_NAME -j ACCEPT
+iptables -A FORWARD -i $TUNNEL_NAME -j ACCEPT
+iptables -A FORWARD -o $TUNNEL_NAME -j ACCEPT
 
 # Apply MSS clamping if enabled
-if [[ "\$MSS_VALUE" != "0" && -n "\$MSS_VALUE" ]]; then
-    iptables -t mangle -A FORWARD -o \$TUNNEL_NAME -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss \$MSS_VALUE
-    iptables -t mangle -A FORWARD -i \$TUNNEL_NAME -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss \$MSS_VALUE
+if [[ "$MSS_VALUE" != "0" && -n "$MSS_VALUE" ]]; then
+    iptables -t mangle -A FORWARD -o $TUNNEL_NAME -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_VALUE
+    iptables -t mangle -A FORWARD -i $TUNNEL_NAME -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_VALUE
 fi
 
-echo "GRE tunnel $tunnel_id configured successfully on Iran server"
-EOF
+echo "GRE tunnel TUNNELID configured successfully on Iran server"
+EOFSCRIPT
+
+    # Replace placeholders
+    sed -i "s/TUNNELNUM/$tunnel_num/g" "/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh"
+    sed -i "s/TUNNELID/$tunnel_id/g" "/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh"
+    sed -i "s/TUNNELSUBNET/$tunnel_ip/g" "/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh"
 
     # Create shutdown script
     cat > "/usr/local/bin/gre-tunnel-${tunnel_id}-down.sh" << EOF
@@ -462,43 +473,43 @@ MSS_VALUE=$mss_value
 EOF
 
     # Create startup script
-    cat > "/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh" << EOF
+    cat > "/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh" << 'EOFSCRIPT'
 #!/bin/bash
-source $CONFIG_DIR/tunnel-${tunnel_id}.conf
+source /etc/gre-tunnels/tunnel-iran-TUNNELNUM.conf
 
 # Enable IP forwarding
 sysctl -w net.ipv4.ip_forward=1 > /dev/null
 sysctl -w net.ipv4.conf.all.forwarding=1 > /dev/null
 
 # Create GRE tunnel
-ip tunnel add \$TUNNEL_NAME mode gre local \$KHAREJ_IP remote \$IRAN_IP ttl 64
-ip addr add \$TUNNEL_IP_KHAREJ/30 dev \$TUNNEL_NAME
-ip link set \$TUNNEL_NAME mtu 1420
-ip link set \$TUNNEL_NAME up
+ip tunnel add $TUNNEL_NAME mode gre local $KHAREJ_IP remote $IRAN_IP ttl 64
+ip addr add $TUNNEL_IP_KHAREJ/30 dev $TUNNEL_NAME
+ip link set $TUNNEL_NAME mtu 1420
+ip link set $TUNNEL_NAME up
 
-# Wait for interface to be fully up
-sleep 1
-
-# Disable RP filter for tunnel interface
-if [[ -d "/proc/sys/net/ipv4/conf/\$TUNNEL_NAME" ]]; then
-    echo 0 > "/proc/sys/net/ipv4/conf/\$TUNNEL_NAME/rp_filter"
-fi
+# Disable RP filter for tunnel interface using sysctl (more reliable)
+sysctl -w net.ipv4.conf.$TUNNEL_NAME.rp_filter=0 > /dev/null 2>&1
 
 # Add route for tunnel network
-ip route add $tunnel_ip.0/30 dev \$TUNNEL_NAME 2>/dev/null || true
+ip route add TUNNELSUBNET.0/30 dev $TUNNEL_NAME 2>/dev/null || true
 
 # Allow forwarding
-iptables -A FORWARD -i \$TUNNEL_NAME -j ACCEPT
-iptables -A FORWARD -o \$TUNNEL_NAME -j ACCEPT
+iptables -A FORWARD -i $TUNNEL_NAME -j ACCEPT
+iptables -A FORWARD -o $TUNNEL_NAME -j ACCEPT
 
 # Apply MSS clamping if enabled
-if [[ "\$MSS_VALUE" != "0" && -n "\$MSS_VALUE" ]]; then
-    iptables -t mangle -A FORWARD -o \$TUNNEL_NAME -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss \$MSS_VALUE
-    iptables -t mangle -A FORWARD -i \$TUNNEL_NAME -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss \$MSS_VALUE
+if [[ "$MSS_VALUE" != "0" && -n "$MSS_VALUE" ]]; then
+    iptables -t mangle -A FORWARD -o $TUNNEL_NAME -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_VALUE
+    iptables -t mangle -A FORWARD -i $TUNNEL_NAME -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_VALUE
 fi
 
-echo "GRE tunnel $tunnel_id configured successfully on Kharej server"
-EOF
+echo "GRE tunnel TUNNELID configured successfully on Kharej server"
+EOFSCRIPT
+
+    # Replace placeholders
+    sed -i "s/TUNNELNUM/$tunnel_num/g" "/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh"
+    sed -i "s/TUNNELID/$tunnel_id/g" "/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh"
+    sed -i "s/TUNNELSUBNET/$tunnel_ip/g" "/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh"
 
     # Create shutdown script
     cat > "/usr/local/bin/gre-tunnel-${tunnel_id}-down.sh" << EOF
@@ -579,50 +590,50 @@ MSS_VALUE=$mss_value
 EOF
 
     # Create startup script
-    cat > "/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh" << EOF
+    cat > "/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh" << 'EOFSCRIPT'
 #!/bin/bash
-source $CONFIG_DIR/tunnel-${tunnel_id}.conf
+source /etc/gre-tunnels/tunnel-kharej-TUNNELNUM.conf
 
 # Enable IP forwarding
 sysctl -w net.ipv4.ip_forward=1 > /dev/null
 sysctl -w net.ipv4.conf.all.forwarding=1 > /dev/null
 
 # Create GRE tunnel
-ip tunnel add \$TUNNEL_NAME mode gre remote \$KHAREJ2_IP local \$KHAREJ1_IP ttl 64
-ip addr add \$TUNNEL_IP_KHAREJ1/30 dev \$TUNNEL_NAME
-ip link set \$TUNNEL_NAME mtu 1420
-ip link set \$TUNNEL_NAME up
+ip tunnel add $TUNNEL_NAME mode gre remote $KHAREJ2_IP local $KHAREJ1_IP ttl 64
+ip addr add $TUNNEL_IP_KHAREJ1/30 dev $TUNNEL_NAME
+ip link set $TUNNEL_NAME mtu 1420
+ip link set $TUNNEL_NAME up
 
-# Wait for interface to be fully up
-sleep 1
-
-# Disable RP filter for tunnel interface
-if [[ -d "/proc/sys/net/ipv4/conf/\$TUNNEL_NAME" ]]; then
-    echo 0 > "/proc/sys/net/ipv4/conf/\$TUNNEL_NAME/rp_filter"
-fi
+# Disable RP filter for tunnel interface using sysctl (more reliable)
+sysctl -w net.ipv4.conf.$TUNNEL_NAME.rp_filter=0 > /dev/null 2>&1
 
 # Add route for tunnel network
-ip route add $tunnel_ip.0/30 dev \$TUNNEL_NAME 2>/dev/null || true
+ip route add TUNNELSUBNET.0/30 dev $TUNNEL_NAME 2>/dev/null || true
 
 # Configure iptables - DNAT selected ports to second Kharej
-iptables -t nat -A PREROUTING -p tcp -m multiport --dports \$PORTS -j DNAT --to-destination \$TUNNEL_IP_KHAREJ2
-iptables -t nat -A PREROUTING -p udp -m multiport --dports \$PORTS -j DNAT --to-destination \$TUNNEL_IP_KHAREJ2
+iptables -t nat -A PREROUTING -p tcp -m multiport --dports $PORTS -j DNAT --to-destination $TUNNEL_IP_KHAREJ2
+iptables -t nat -A PREROUTING -p udp -m multiport --dports $PORTS -j DNAT --to-destination $TUNNEL_IP_KHAREJ2
 
 # Masquerade traffic going through GRE
-iptables -t nat -A POSTROUTING -o \$TUNNEL_NAME -j MASQUERADE
+iptables -t nat -A POSTROUTING -o $TUNNEL_NAME -j MASQUERADE
 
 # Allow forwarding
-iptables -A FORWARD -i \$TUNNEL_NAME -j ACCEPT
-iptables -A FORWARD -o \$TUNNEL_NAME -j ACCEPT
+iptables -A FORWARD -i $TUNNEL_NAME -j ACCEPT
+iptables -A FORWARD -o $TUNNEL_NAME -j ACCEPT
 
 # Apply MSS clamping if enabled
-if [[ "\$MSS_VALUE" != "0" && -n "\$MSS_VALUE" ]]; then
-    iptables -t mangle -A FORWARD -o \$TUNNEL_NAME -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss \$MSS_VALUE
-    iptables -t mangle -A FORWARD -i \$TUNNEL_NAME -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss \$MSS_VALUE
+if [[ "$MSS_VALUE" != "0" && -n "$MSS_VALUE" ]]; then
+    iptables -t mangle -A FORWARD -o $TUNNEL_NAME -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_VALUE
+    iptables -t mangle -A FORWARD -i $TUNNEL_NAME -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS_VALUE
 fi
 
-echo "GRE Kharej-to-Kharej tunnel $tunnel_id configured successfully (Source)"
-EOF
+echo "GRE Kharej-to-Kharej tunnel TUNNELID configured successfully (Source)"
+EOFSCRIPT
+
+    # Replace placeholders
+    sed -i "s/TUNNELNUM/$tunnel_num/g" "/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh"
+    sed -i "s/TUNNELID/$tunnel_id/g" "/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh"
+    sed -i "s/TUNNELSUBNET/$tunnel_ip/g" "/usr/local/bin/gre-tunnel-${tunnel_id}-up.sh"
 
     # Create shutdown script
     cat > "/usr/local/bin/gre-tunnel-${tunnel_id}-down.sh" << EOF
