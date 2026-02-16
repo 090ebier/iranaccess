@@ -302,7 +302,10 @@ ip addr add \$TUNNEL_IP_IRAN/30 dev \$TUNNEL_NAME
 ip link set \$TUNNEL_NAME mtu 1420
 ip link set \$TUNNEL_NAME up
 
-# Disable RP filter for tunnel
+# Wait for interface to be fully up
+sleep 1
+
+# Disable RP filter for tunnel interface
 if [[ -d "/proc/sys/net/ipv4/conf/\$TUNNEL_NAME" ]]; then
     echo 0 > "/proc/sys/net/ipv4/conf/\$TUNNEL_NAME/rp_filter"
 fi
@@ -473,7 +476,10 @@ ip addr add \$TUNNEL_IP_KHAREJ/30 dev \$TUNNEL_NAME
 ip link set \$TUNNEL_NAME mtu 1420
 ip link set \$TUNNEL_NAME up
 
-# Disable RP filter for tunnel
+# Wait for interface to be fully up
+sleep 1
+
+# Disable RP filter for tunnel interface
 if [[ -d "/proc/sys/net/ipv4/conf/\$TUNNEL_NAME" ]]; then
     echo 0 > "/proc/sys/net/ipv4/conf/\$TUNNEL_NAME/rp_filter"
 fi
@@ -587,7 +593,10 @@ ip addr add \$TUNNEL_IP_KHAREJ1/30 dev \$TUNNEL_NAME
 ip link set \$TUNNEL_NAME mtu 1420
 ip link set \$TUNNEL_NAME up
 
-# Disable RP filter for tunnel
+# Wait for interface to be fully up
+sleep 1
+
+# Disable RP filter for tunnel interface
 if [[ -d "/proc/sys/net/ipv4/conf/\$TUNNEL_NAME" ]]; then
     echo 0 > "/proc/sys/net/ipv4/conf/\$TUNNEL_NAME/rp_filter"
 fi
@@ -718,7 +727,10 @@ ip addr add \$TUNNEL_IP_KHAREJ2/30 dev \$TUNNEL_NAME
 ip link set \$TUNNEL_NAME mtu 1420
 ip link set \$TUNNEL_NAME up
 
-# Disable RP filter for tunnel
+# Wait for interface to be fully up
+sleep 1
+
+# Disable RP filter for tunnel interface
 if [[ -d "/proc/sys/net/ipv4/conf/\$TUNNEL_NAME" ]]; then
     echo 0 > "/proc/sys/net/ipv4/conf/\$TUNNEL_NAME/rp_filter"
 fi
