@@ -192,7 +192,8 @@ root hard nofile 1048576
 LIMITS
     echo "✓ ulimit (nofile) set to 1048576 in limits.conf"
 fi
-
+iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
+iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 # ── Final summary ─────────────────────────────────────────────
 echo ""
 echo "============================================"
